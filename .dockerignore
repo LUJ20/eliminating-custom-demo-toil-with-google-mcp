@@ -1,0 +1,16 @@
+# Left out of the container build context. Secrets and local state never leave the laptop.
+.gcloudignore
+.git
+.gitignore
+.env
+.venv/
+.cache/
+generated_projects/
+__pycache__/
+*.pyc
+*.log
+*.lock
+.DS_Store
+tests/
+docs/
+scripts/

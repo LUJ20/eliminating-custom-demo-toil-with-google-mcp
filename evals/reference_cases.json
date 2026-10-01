@@ -1,0 +1,22 @@
+[
+  {
+    "id": "voice_avatar_concierge",
+    "customer": "Cymbal Air",
+    "ask": "Multilingual real-time voice and avatar concierge for Cymbal Air Rewards members: natural low-latency conversation in English, Japanese, Spanish, French, German and Chinese, a consistent branded voice, avatar lip-sync in each of these languages separately, and handoff to human agents."
+  },
+  {
+    "id": "rag_enterprise_search",
+    "customer": "Contoso Financial Services",
+    "ask": "Enterprise search assistant for employees that answers questions from internal policy documents, product manuals and wiki pages stored in Google Drive and Cloud Storage, cites the exact source passage for every answer, respects each employee's document permissions, and says it does not know when the corpus has no answer."
+  },
+  {
+    "id": "agentic_analytics_tickets",
+    "customer": "Northwind Commerce",
+    "ask": "Analytics agent for the operations team that answers plain-language questions by writing and running BigQuery SQL over the sales warehouse, explains the result with a chart, detects week-over-week anomalies, and files a follow-up ticket with the evidence for each anomaly it finds, asking for confirmation before any write action."
+  },
+  {
+    "id": "document_extraction",
+    "customer": "Fabrikam Insurance",
+    "ask": "Claims intake pipeline that reads scanned claim forms, invoices and photos of damage uploaded by customers, extracts policy number, dates, amounts and line items into validated structured JSON, flags missing or inconsistent fields for a human reviewer, and stores the results for audit."
+  }
+]

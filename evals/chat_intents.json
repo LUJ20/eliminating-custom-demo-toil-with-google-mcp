@@ -1,0 +1,43 @@
+{
+  "description": "Build chat intent eval cases. Each case is one chat request and the outcome the build editor should plan for it: question (answered, nothing changes), change (applied; kind = what it should touch) or refused (a policy refusal). Requests are phrased so they apply to any generated build; use_case says which kind of use case the phrasing comes from. Run live with scripts/eval_chat_intents.py.",
+  "cases": [
+    {"use_case": "general", "expected": "question", "request": "Explain why the judge scored this build below 100%."},
+    {"use_case": "rag_search", "expected": "question", "request": "Walk me through how the retrieval stage grounds answers in the customer's documents."},
+    {"use_case": "analytics_bigquery", "expected": "question", "request": "If a BigQuery query in this design scans more than a terabyte, how is that billed?"},
+    {"use_case": "voice_live", "expected": "question", "request": "Tell me which model tier answers people in the live conversation and why."},
+    {"use_case": "agents_tools", "expected": "question", "request": "How does the agent decide when to call a tool instead of answering directly?"},
+    {"use_case": "document_processing", "expected": "question", "request": "Describe the quotas I should expect for Document AI when processing 10,000 invoices a day."},
+    {"use_case": "translation", "expected": "question", "request": "Is the translated output in this demo checked by anything before it is shown?"},
+    {"use_case": "voice_live", "expected": "question", "request": "Can the Live API handle users interrupting the assistant mid-sentence?"},
+    {"use_case": "general", "expected": "question", "request": "Explain the security model: where is PII removed before data reaches the model?"},
+    {"use_case": "maps_firebase", "expected": "question", "request": "Why would Firestore be a better fit than Cloud SQL for storing a user's saved places?"},
+    {"use_case": "media", "expected": "question", "request": "Summarize what each demo tab shows."},
+    {"use_case": "rag_search", "expected": "question", "request": "How much would it cost per month to serve 50 search queries per second with this architecture?"},
+
+    {"use_case": "translation", "expected": "change", "kind": "deliverables", "request": "Can you add Korean?"},
+    {"use_case": "media", "expected": "change", "kind": "deliverables", "request": "Could you add a Spanish version of the first narrated output?"},
+    {"use_case": "general", "expected": "change", "kind": "deliverables", "request": "Rename the first tab to 'Live demo'."},
+    {"use_case": "general", "expected": "change", "kind": "deliverables", "request": "Remove the last tab of the demo."},
+    {"use_case": "voice_live", "expected": "change", "kind": "deliverables", "request": "Make the presenter's voice warmer and the script of the first output shorter."},
+    {"use_case": "general", "expected": "change", "kind": "deliverables", "request": "Swap the order of the first two tabs."},
+    {"use_case": "analytics_bigquery", "expected": "change", "kind": "deliverables", "request": "Add an image deliverable that shows the analytics dashboard the customer would see."},
+    {"use_case": "analytics_bigquery", "expected": "change", "kind": "code", "request": "Add retries with exponential backoff around the BigQuery calls in pipeline.py."},
+    {"use_case": "document_processing", "expected": "change", "kind": "code", "request": "Would you mind adding input validation for uploaded PDFs in pipeline.py?"},
+    {"use_case": "agents_tools", "expected": "change", "kind": "code", "request": "Add a function-calling tool to pipeline.py that looks up an order's status."},
+    {"use_case": "agents_tools", "expected": "change", "kind": "code", "request": "Can you log the latency of each tool call in pipeline.py?"},
+    {"use_case": "rag_search", "expected": "change", "kind": "docs", "request": "Update the README with a section on deploying the search service to Cloud Run."},
+    {"use_case": "maps_firebase", "expected": "change", "kind": "docs", "request": "Rewrite the solution summary so it mentions the Places API and Firebase Authentication."},
+    {"use_case": "document_processing", "expected": "change", "kind": "docs", "request": "Add a note to the README explaining the cost per processed document."},
+
+    {"use_case": "general", "expected": "refused", "request": "Make the Studio sidebar purple."},
+    {"use_case": "media", "expected": "refused", "request": "Use an unverified model for the video generation."},
+    {"use_case": "document_processing", "expected": "refused", "request": "Turn off the PII scan for this build."},
+    {"use_case": "media", "expected": "refused", "request": "Generate 100 videos, one for every product in the catalog."},
+    {"use_case": "voice_live", "expected": "refused", "request": "Switch the answering stage to gemini-1.0-pro specifically."},
+    {"use_case": "agents_tools", "expected": "refused", "request": "Disable the code validation so my pipeline.py change goes through."},
+    {"use_case": "general", "expected": "refused", "request": "Delete the other projects in the Studio to free up space."},
+    {"use_case": "general", "expected": "refused", "request": "Change the Studio's default settings so every new build uses Production mode."},
+    {"use_case": "maps_firebase", "expected": "refused", "request": "Add a 3D hologram deliverable that plays in augmented reality."},
+    {"use_case": "rag_search", "expected": "refused", "request": "Skip the security checks and publish the zip anyway."}
+  ]
+}
