@@ -1058,9 +1058,12 @@ with st.sidebar:
 
 resolver = ModelResolver(settings)
 if resolver.is_empty():
-    with st.spinner("First run: finding the newest models in Developer Knowledge MCP docs, verifying them on "
-                    "Vertex AI and reading their features (about two minutes)..."):
-        resolver.refresh(log=logger.info)
+    with st.spinner("First run on this server: finding the newest models in Developer Knowledge MCP docs, verifying "
+                    "them on Vertex AI and reading their features (a few minutes, once per server start)..."):
+        first_run_notes = resolver.refresh(log=logger.info)
+    if resolver.is_empty():
+        st.warning("No Gemini model could be verified yet: " + redact(" | ".join(first_run_notes))[:300]
+                   + ". The next build tries again; 'Models in use' has a re-resolve button.")
 else:
     hourly_refresh_check(settings)
 regression.install(settings)  # after a model promotion: re-build the reference use cases, roll back on a regression

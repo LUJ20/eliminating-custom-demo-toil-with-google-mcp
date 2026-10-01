@@ -3,7 +3,9 @@ state in the upload."""
 import os
 import subprocess
 import unittest
+from unittest import mock
 
+from engine import serve
 from engine.config import ROOT
 
 
@@ -32,8 +34,12 @@ class DeployFilesTest(unittest.TestCase):
 
     def test_container_listens_on_the_cloud_run_port_as_non_root(self):
         docker = _read("Dockerfile")
-        self.assertIn("${PORT:-8080}", docker)
+        self.assertIn('CMD ["python", "-m", "engine.serve"]', docker)
         self.assertIn("USER studio", docker)
+        with mock.patch.dict(os.environ, {"PORT": "9090"}):
+            self.assertIn("--server.port=9090", serve.streamlit_argv())
+        with mock.patch.dict(os.environ, {"PORT": ""}):
+            self.assertIn("--server.port=8080", serve.streamlit_argv())
 
 
 if __name__ == "__main__":

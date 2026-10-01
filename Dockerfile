@@ -12,4 +12,6 @@ RUN useradd --create-home --uid 10001 studio && chown -R studio:studio /app
 USER studio
 
 EXPOSE 8080
-CMD ["sh", "-c", "exec streamlit run app.py --server.port=${PORT:-8080} --server.address=0.0.0.0 --server.headless=true --server.fileWatcherType=none --browser.gatherUsageStats=false"]
+# engine/serve.py starts picking the newest models in the background, then runs Streamlit on $PORT
+# (default 8080) in the same process, so the first visitor does not wait for a cold model registry.
+CMD ["python", "-m", "engine.serve"]

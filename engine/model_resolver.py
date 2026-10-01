@@ -33,6 +33,7 @@ import re
 import statistics
 import threading
 import time
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import timedelta
@@ -208,6 +209,7 @@ Return JSON only: {{"features": [{{"name": "", "what": "", "how_to_enable": "", 
 {sources}"""
 
 _REFRESH_RUNNING = threading.Lock()  # one refresh per process at a time
+REFRESH_WAIT_S = 900  # with no models yet, a caller waits this long for a refresh that is already running
 _HISTORY_LOCK = threading.Lock()     # tiers are gated in parallel threads; history is shared
 _HOOKS_LOCK = threading.Lock()
 _PROMOTION_HOOKS: List[Callable[[Settings, List[dict]], None]] = []
@@ -700,12 +702,22 @@ class ModelResolver:
 
     # ---------------------------------------------------------------- refresh
     def refresh(self, force: bool = False, log: Callable[[str], None] = print) -> List[str]:
-        """Discover, verify, gate and promote every tier, then re-read features. Returns what happened."""
+        """Discover, verify, gate and promote every tier, then re-read features. Returns what happened.
+        When a refresh is already running (start-up warm-up, another session): return at once if there are
+        models to use; with none yet, wait for that run, and refresh here only if it found nothing."""
         self.reg = self._load()  # another process (cron, another app session) may have refreshed already
         if not force and not self.is_stale() and not self.is_empty():
             return []
         if not _REFRESH_RUNNING.acquire(blocking=False):
-            return ["refresh already running"]
+            if not self.is_empty():
+                return ["refresh already running"]
+            log("The newest models are already being resolved (server start or another session); waiting for it")
+            if not _REFRESH_RUNNING.acquire(timeout=REFRESH_WAIT_S):
+                return [f"refresh already running; still no models after {REFRESH_WAIT_S // 60:g} min"]
+            self.reg = self._load()
+            if not self.is_empty():
+                _REFRESH_RUNNING.release()
+                return ["models resolved by the refresh that was already running"]
         try:
             t0 = time.monotonic()
             cands, unclassified = self.discover()
@@ -715,13 +727,24 @@ class ModelResolver:
                 notes = self._decide_and_save(verified, checked, unclassified)
                 notes += self._scout_features_safely()
             else:
-                notes = ["no model could be verified (MCP or Vertex AI unreachable); registry unchanged"]
+                notes = [self._why_unverified(cands, checked)]
+                logger.warning("model refresh: %s", notes[0])
             notes.append(f"resolver refresh finished in {time.monotonic() - t0:.0f}s")
             for n in notes:
                 log(n)
             return notes
         finally:
             _REFRESH_RUNNING.release()
+
+    @staticmethod
+    def _why_unverified(cands: Dict[str, List[dict]], checked: Dict[str, List[dict]]) -> str:
+        """Why a refresh verified no model, in one line (shown in the app and logged)."""
+        if not any(cands.values()):
+            return ("no model IDs found: the Developer Knowledge MCP search failed or returned nothing (is the "
+                    "Developer Knowledge API enabled?); registry unchanged")
+        counts = Counter(str(c.get("status") or "unknown") for lst in checked.values() for c in lst)
+        found = ", ".join(f"{status} x{n}" for status, n in counts.most_common(3))
+        return f"no model could be verified on Vertex AI ({found or 'nothing checked'}); registry unchanged"
 
     def discover(self) -> Tuple[Dict[str, List[dict]], List[str]]:
         """Ask Developer Knowledge MCP for model IDs; classify them into tiers by naming convention."""

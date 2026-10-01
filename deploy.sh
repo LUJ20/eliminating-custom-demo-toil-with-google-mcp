@@ -148,7 +148,8 @@ if [ "$MODE" = "cloud-run" ]; then
 
   URL="$(gcloud run services describe "$SERVICE" --project "$PROJECT" --region "$REGION" --format 'value(status.url)')"
   step "Done: $URL"
-  echo "First visit: sign in with an allowed Google account; the app then resolves the newest models (about two minutes)."
+  echo "First visit: sign in with an allowed Google account. A new instance spends a few minutes picking the newest"
+  echo "models when it starts; open it sooner and the first page waits for that, once."
   echo "Add people:  ./deploy.sh --project $PROJECT --allow user:NAME@example.com,group:TEAM@example.com"
   echo "Remove:      gcloud run services delete $SERVICE --project $PROJECT --region $REGION"
   exit 0
@@ -180,5 +181,5 @@ done
 .venv/bin/python -m pip install -q --upgrade pip >/dev/null
 .venv/bin/python -m pip install -q -r requirements.txt
 
-step "Starting app on http://localhost:$PORT (first run resolves the newest models, about two minutes)"
+step "Starting app on http://localhost:$PORT (the first run picks the newest models, a few minutes)"
 exec .venv/bin/streamlit run app.py --server.port "$PORT" --server.headless true

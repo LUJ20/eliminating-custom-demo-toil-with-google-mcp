@@ -311,15 +311,19 @@ class UseCaseSynthesizer:
             float(getattr(self.s, "acceptance_min_pass", acceptance.DEFAULT_MIN_PASS)), ask)
 
     def _prepare_models(self, say: Callable[[str], None]) -> None:
-        """First use: resolve models now. Read missing feature lists. Fail fast without a brain model."""
+        """First use: resolve models now, or wait for the refresh already running. Read missing feature lists.
+        Fail fast without a brain model."""
+        notes: List[str] = []
         if self.resolver.is_empty():
-            say("First run: resolving the newest models via Developer Knowledge MCP (about a minute)")
-            self.resolver.refresh(log=say)
+            say("First run on this server: resolving the newest models via Developer Knowledge MCP (a few minutes)")
+            notes = self.resolver.refresh(log=say)
         if self.resolver.features_missing():
             say("Reading what's new in the models from their official model pages (MCP)")
             self.doctor.guard("Feature scouting", self.resolver.scout_features, fallback=[])
         if not {ROLES["planner"], ROLES["codegen"]} & set(self.resolver.catalog()):
-            raise StepFailed("No verified Gemini model is available. Run: python -m engine.model_resolver --force")
+            why = next((n for n in notes if n.startswith(("no model", "refresh already running"))), "")
+            raise StepFailed("No verified Gemini model is available" + (f" ({why})" if why else "")
+                             + ". Try again in a minute, or click 'Re-resolve models now' under 'Models in use'.")
         say(f"Models: {self.s.mode} mode ({'newest, previews allowed' if self.s.allow_preview else 'GA only'})")
 
     def _attempt(self, n: int, customer: str, ask: str, grounding: List[dict], feedback: str,

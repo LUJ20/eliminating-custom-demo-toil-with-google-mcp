@@ -54,8 +54,8 @@ Only you can open it at first. To let others in:
 ./deploy.sh --project YOUR_PROJECT_ID --allow user:NAME@example.com,group:TEAM@example.com
 ```
 
-The first deploy takes about 5 minutes. On the first visit the app spends about 2 minutes picking the newest
-models.
+The first deploy takes about 5 minutes. Each new instance then spends a few minutes picking the newest models;
+open the app sooner and the first page waits for that, once.
 
 **Run locally instead:** `./deploy.sh --local --project YOUR_PROJECT_ID` opens http://localhost:8502. Local runs
 can also publish decks to Google Slides with `--drive-folder <Drive folder URL or ID>`.

@@ -32,7 +32,8 @@ PLAYBOOK: Dict[str, Tuple[str, List[str]]] = {  # diagnosis when no model is ava
     "model_unavailable": ("The model is not served for this project or location (retired, not rolled out yet, "
                           "or needs allowlisting).",
                           ["The resolver quarantined it and moved to the next verified model.",
-                           "To re-resolve now: python -m engine.model_resolver --force"]),
+                           "To re-resolve now: 'Re-resolve models now' under 'Models in use' "
+                           "(or: python -m engine.model_resolver --force)"]),
     "rate_limited": ("Quota or rate limit exceeded (HTTP 429).",
                      ["Wait and retry, or request more quota in IAM & Admin > Quotas for this model."]),
     "server_error": ("Transient Google API server error.", ["Retry later; backoff retries were already applied."]),
@@ -110,7 +111,8 @@ class Troubleshooter:
         a fix and retries, then walks the fallback chain. Returns (result, model_entry)."""
         chain = self._plan_chain(tier, max_models)
         if not chain:
-            raise StepFailed(f"{step}: no verified model for tier '{tier}'. Run: python -m engine.model_resolver --force")
+            raise StepFailed(f"{step}: no verified model for tier '{tier}'. Click 'Re-resolve models now' under "
+                             "'Models in use' (or run: python -m engine.model_resolver --force)")
         incident: Optional[dict] = None
         for m in chain:
             rt = m["_tier"]  # telemetry goes to the model's own tier
