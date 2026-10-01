@@ -4,7 +4,8 @@ app in this same process.
 A new instance starts with no model registry, and resolving it (Developer Knowledge MCP discovery, verification on
 Vertex AI, golden set, feature pages) takes a few minutes. Starting at boot means the first visitor usually finds
 the models ready; one who comes sooner waits for this run instead of starting a second one (ModelResolver.refresh).
-Same process on purpose: the app shares this run's lock and registry.
+Same process on purpose: the app shares this run's lock and registry. It also restores the saved projects from
+the bucket and backs them up every minute (engine/project_sync.py), so projects survive redeploys.
 
     python -m engine.serve        # listens on $PORT (Cloud Run sets it), default 8080
 """
@@ -14,6 +15,7 @@ import sys
 import threading
 from typing import List, Optional
 
+from engine import project_sync
 from engine.config import ROOT, Settings
 from engine.model_resolver import ModelResolver
 
@@ -44,6 +46,7 @@ def streamlit_argv() -> List[str]:
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     threading.Thread(target=warm_up, name="model-warmup", daemon=True).start()
+    project_sync.start()  # restore saved projects from the bucket, then back them up every minute
     from streamlit.web import cli as streamlit_cli  # here, so importing this module (tests) stays light
     sys.argv = streamlit_argv()
     sys.exit(streamlit_cli.main())

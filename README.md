@@ -90,7 +90,8 @@ Every tuning knob (eval thresholds, media limits, model policy) is listed with i
 This is a demo deployment, not a production service.
 
 - One Cloud Run instance stays on (about $4 a day at list price), plus model usage for each build.
-- Projects live on the instance and are lost on redeploy. Published packages stay in your bucket.
+- Built projects are backed up to your bucket (`_projects/`) every minute and restored when the app starts, so
+  they survive redeploys and restarts. To bring local projects along: `python -m engine.project_sync --push`.
 - One instance serves a small team. A build takes about 7 to 10 minutes.
 - Generated code is checked by evals but never executed by the studio. Run it in your own project before you
   show it live.
