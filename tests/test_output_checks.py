@@ -214,6 +214,11 @@ class JobWrittenTest(OfflineTestCase):
         self.texts.append(prompt)
         return f"text-{len(self.texts)}", {}
 
+    def _chat(self, settings, model, location, system, history):
+        self.turns = getattr(self, "turns", [])
+        self.turns.append((system, [h["text"] for h in history]))
+        return f"reply-{len(self.turns)}"
+
     def _run(self, items, check, story=None, scenes=None):
         items = manifest.validate_manifest(items, self.catalog, 16)
         for d in items:
@@ -222,6 +227,7 @@ class JobWrittenTest(OfflineTestCase):
         with mock.patch.object(brain, "direct_media", side_effect=self._direction), \
                 mock.patch.object(media_qa, "check", side_effect=check), \
                 mock.patch.object(vertex, "generate", side_effect=self._generate), \
+                mock.patch.object(dlv.media, "chat", side_effect=self._chat), \
                 mock.patch.object(dlv, "McpKnowledgeClient", return_value=FakeMcp()):
             dlv.start(self.settings, build_id="b1", project_dir=self.project, customer="Acme", ask="a", summary="s",
                       deliverables=items, story=story)
@@ -270,26 +276,35 @@ class JobWrittenTest(OfflineTestCase):
         self.assertEqual([c["name"] for c in email["qa"]["checks"]], ["matches_brief", "brand_safe"])
         self.assertEqual(dlv.quality_row(state)["value"], "1/1 passed")
 
-    def test_a_chat_setup_is_checked_and_a_failure_only_marks_the_badge(self):
+    def test_a_chat_is_played_checked_on_its_transcript_and_replayed_with_the_findings(self):
         def check(settings, model, location, *, deliverable, variant, data, mime, reference=None, hint="", text=""):
             self.checks.append((deliverable["id"], data, mime, text))
             names = media_qa.checks_for(deliverable, variant, False)
-            return media_qa.validate(answer(names, {"matches_brief"}, "No handoff rule."), names)
+            if len(self.checks) == 1:  # first reply: the assistant asked for data it already had
+                return media_qa.validate(answer(names, {"matches_brief"}, "Asked the user to paste the data."), names)
+            return media_qa.validate(answer(names), names)
 
         items = [{"id": "chat", "title": "Try the concierge", "kind": "chat", "tier": "fast",
                   "brief": "Ask the concierge.", "variants": [{"label": "English", "language": "en"}]}]
         state = self._run(items, check)
         chat = self._asset(state, "chat")
-        self.assertEqual((chat["status"], chat["qa"]["verdict"]), ("ready", "fail"))
+        self.assertEqual((chat["status"], chat["qa"]["verdict"], chat["qa"]["regenerated"]), ("ready", "pass", True))
         self.assertEqual(chat["model"], "gemini-3.8-flash")
-        self.assertEqual(len(self.checks), 1)  # not regenerated
-        self.assertEqual(self.directed, [("chat", "English")])
-        self.assertEqual(self.texts, [])
-        _, data, _, text = self.checks[0]
-        self.assertEqual(data, b"")
-        self.assertIn("SYSTEM INSTRUCTION", text)
+        self.assertEqual(self.directed, [("chat", "English")])  # the setup is written once
+        self.assertEqual(self.texts, [])  # a chat is played through media.chat, not a plain generate call
+        # played twice: the second time the reviewer's finding went into the system instruction
+        self.assertEqual([h for _, h in self.turns], [[CHAT_VARIANT["script"]]] * 2)
+        self.assertTrue(self.turns[0][0].startswith(CHAT_VARIANT["prompt"]))
+        self.assertIn("A reviewer rejected your previous reply: a reviewer found these problems", self.turns[1][0])
+        self.assertIn("matches brief", self.turns[1][0])
+        self.assertEqual(len(self.checks), 2)
+        _, data, mime, text = self.checks[1]
+        self.assertEqual((data, mime), (b"reply-2", "text/markdown"))
+        for part in ("SYSTEM INSTRUCTION", "FIRST USER MESSAGE", "ASSISTANT'S FIRST REPLY:\nreply-2"):
+            self.assertIn(part, text)
+        self.assertEqual(dlv.chat_reply(self.project, chat), "reply-2")
         self.assertIn(CHAT_VARIANT["prompt"], text)
-        self.assertIn("failed a critical check: Try the concierge / English", dlv.quality_row(state)["notes"])
+        self.assertEqual(dlv.quality_row(state)["value"], "1/1 passed")  # the replay passed: the badge says so
 
     def test_the_scene_and_the_story_hero_reach_the_checker(self):
         def check(settings, model, location, *, deliverable, variant, data, mime, reference=None, hint="", text=""):

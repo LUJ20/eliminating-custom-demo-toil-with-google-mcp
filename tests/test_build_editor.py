@@ -96,6 +96,19 @@ class VersionsTest(OfflineTestCase):
         self.assertEqual(read(os.path.join(self.pd, "a.txt")), "one")
         self.assertFalse(versions.is_dirty(self.pd))
 
+    def test_a_redrawn_deck_is_not_an_unsaved_change(self):
+        deck = os.path.join(self.pd, "proj_architecture_deck.pptx")
+        write(deck, b"old deck")
+        v1 = versions.mark_saved(self.pd, versions.snapshot(self.pd, "build"))
+        write(deck, b"new slide layout")  # build_editor.refresh_deck after a deck_generator change
+        self.assertFalse(versions.is_dirty(self.pd))
+        v2 = versions.snapshot(self.pd, "before: 1")  # a new snapshot (the deck bytes differ) ...
+        self.assertNotEqual(v1, v2)
+        self.assertIsNone(versions.undo(self.pd))  # ... but not an undo step: no source changed
+        versions.restore(self.pd, v1)  # but the deck is stored and restored like any other file
+        with open(deck, "rb") as f:
+            self.assertEqual(f.read(), b"old deck")
+
     def test_project_without_versions_is_clean(self):
         self.assertFalse(versions.is_dirty(self.pd))
         self.assertFalse(versions.is_dirty(os.path.join(self.tmp, "missing")))

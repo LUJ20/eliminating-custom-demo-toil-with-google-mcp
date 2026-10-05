@@ -10,18 +10,24 @@ models ("what's new", read from their official model pages via MCP); the rubric 
 When ACCEPTANCE_TESTS is on, the chosen design is also run against end-to-end acceptance tests planned from the
 ask (engine/acceptance.py); their row joins the rubric, and PASSED requires it too.
 
-Independent steps run in parallel: MCP grounding with model preparation, doc citations with code generation,
-dependency checks with judging, acceptance tests with the demo output start, and the deck with the zip. Progress
-messages are sent from the calling thread only (Streamlit UI calls must not come from worker threads).
-Each build is written to a temporary folder and swapped in whole, so a project folder never mixes files
+Every check runs on every build; independent steps overlap instead of queueing: MCP grounding with model
+preparation, doc citations with code generation, dependency checks with judging, and the deck with the zip. The
+demo output AND the acceptance tests start the moment the first plan exists (both work from the design, not the
+code), so they run while the code is generated, judged and retried. A retry whose design passed every check keeps
+that design (its clips and its acceptance tests carry on) and rewrites only pipeline.py, without a second planner
+call. Progress messages are sent from the calling thread only (Streamlit UI calls must not come from worker
+threads). Each build is written to a temporary folder and swapped in whole, so a project folder never mixes files
 from two builds.
 """
+import copy
+import hashlib
 import json
 import logging
 import os
 import re
 import shutil
 import tempfile
+import threading
 import time
 import uuid
 import zipfile
@@ -47,6 +53,11 @@ RESULT_FILE = ".studio_result.json"  # the build result, so the app can reload a
 TRANSIENT_KEYS = ("project_dir", "zip_path", "deck_path", "code", "requirements")  # re-read from the folder
 MAX_GROUNDING_DOCS = 8
 MAX_DOC_LOOKUPS = 6
+PLAN_KEYS = ("summary", "stages", "deliverables", "story")  # the fields of a planner blueprint
+# Rubric rows about pipeline.py. When only these fail, the design passed: the next attempt keeps it and rewrites the
+# code. Every other row (requirements, grounding, demo coverage, story, model currency, citations) judges the design.
+CODE_ROWS = frozenset({"Code implements the design", "Feature showcase", "Code validity", "Dependencies",
+                       "Security / PII"})
 Check = Tuple[str, bool, str, str, str]  # (metric, passed, threshold, notes, fix for the next attempt)
 
 
@@ -104,6 +115,79 @@ def _story_accepted(rubric: List[dict]) -> bool:
     story = brain.CRITERIA["storytelling"]
     return _row_passed(rubric, brain.CRITERIA["deliverable_coverage"]) and (
         _row_passed(rubric, story) or not any(r.get("metric") == story for r in rubric))
+
+
+def _only_code_failed(rubric: List[dict]) -> bool:
+    """True when the design passed and only pipeline.py did not: every failed row is a code row. A 'Feature
+    showcase' row that failed because the planner picked no feature counts against the design, not the code."""
+    failed = [r for r in rubric if not r.get("pass")]
+    return bool(failed) and all(r.get("metric") in CODE_ROWS
+                                and not str(r.get("notes") or "").startswith("no documented feature") for r in failed)
+
+
+class _Run:
+    """A function running in a daemon thread; result() waits for it. Not an executor on purpose: a run the build
+    no longer needs (the tests of a design it moved away from) must never hold up the result or the process."""
+
+    def __init__(self, fn: Callable[[], Any]):
+        self.finished = threading.Event()
+        self.value: Any = None
+        self.error: Optional[BaseException] = None
+        threading.Thread(target=self._go, args=(fn,), daemon=True, name="acceptance-tests").start()
+
+    def _go(self, fn: Callable[[], Any]) -> None:
+        try:
+            self.value = fn()
+        except BaseException as e:  # re-raised in the thread that asks for the result
+            self.error = e
+        finally:
+            self.finished.set()
+
+    def result(self) -> Any:
+        self.finished.wait()
+        if self.error is not None:
+            raise self.error
+        return self.value
+
+
+class _DesignTests:
+    """The acceptance tests of every design a build plans, started the moment each plan exists. They test the
+    design (its stages, summary and story), never the code, so they run while the code is generated, judged and
+    retried instead of after it. A design is tested once: a retry that keeps the design keeps its tests, and the
+    summary for the chosen design is ready, or nearly ready, when the attempts end."""
+
+    def __init__(self, synth: "UseCaseSynthesizer", customer: str, ask: str, grounding: List[dict]):
+        self.synth, self.customer, self.ask, self.grounding = synth, customer, ask, grounding
+        self.runs: Dict[str, _Run] = {}
+
+    @staticmethod
+    def key(blueprint: dict) -> str:
+        """Identifies a design by what its tests see: the summary, the story and each stage's name, service, API,
+        description, tier and features (not the code, the model IDs or the doc links)."""
+        stages = [{**{k: s.get(k, "") for k in ("stage", "service", "api", "description", "tier")},
+                   "features": [f.get("name") if isinstance(f, dict) else f for f in s.get("features") or []]}
+                  for s in blueprint.get("stages") or []]
+        text = json.dumps([blueprint.get("summary", ""), blueprint.get("story") or {}, stages],
+                          sort_keys=True, default=str)
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+    def start(self, blueprint: dict) -> bool:
+        """Start this design's tests in the background unless they already run. -> True when started now."""
+        k = self.key(blueprint)
+        if k in self.runs:
+            return False
+        snapshot = copy.deepcopy(blueprint)  # the build goes on editing its plan (doc citations); tests read a copy
+        self.runs[k] = _Run(lambda: self.synth._acceptance(self.customer, self.ask, snapshot, self.grounding))
+        return True
+
+    def done(self, blueprint: dict) -> bool:
+        run = self.runs.get(self.key(blueprint))
+        return run is not None and run.finished.is_set()
+
+    def result(self, blueprint: dict) -> dict:
+        """The summary of this design's tests (started now if they were not); waits for them to finish."""
+        self.start(blueprint)
+        return self.runs[self.key(blueprint)].result()
 
 
 def _story_md(story: Optional[dict]) -> str:
@@ -192,7 +276,10 @@ class UseCaseSynthesizer:
         project_dir, zip_path, deck_path = output_paths(self.s.output_dir, slug)
         build_id = uuid.uuid4().hex
         media = {"started": False}
-        frozen: Optional[dict] = None  # deliverables + story the judge already accepted: later attempts keep them
+        demo: Optional[dict] = None  # deliverables + story the judge already accepted: later attempts keep them
+        frozen: Optional[dict] = None  # what the next attempt keeps: the whole design, or just the accepted demo
+        tests = (_DesignTests(self, customer_name, usecase_ask, grounding)
+                 if getattr(self.s, "acceptance_enabled", False) else None)
 
         def start_media(blueprint: dict) -> None:
             """Generate the demo output in the background as soon as a plan exists, so the slow clips overlap
@@ -207,12 +294,20 @@ class UseCaseSynthesizer:
                 summary=blueprint["summary"], deliverables=blueprint["deliverables"],
                 story=blueprint.get("story") or {}), None, retries=0)
 
+        def on_plan(blueprint: dict) -> None:
+            """The moment a plan exists: its demo output and its acceptance tests start in the background, so
+            both run while the code is generated, judged and retried (a design already under test is not retested)."""
+            start_media(blueprint)
+            if tests is not None and blueprint["stages"] and tests.start(blueprint):
+                say(f"Acceptance tests: planning end-to-end tests from the ask ({ROLES['planner']} tier) and running "
+                    "them on this design in the background while the code is built")
+
         try:
             for n in range(1, total + 1):
                 t0 = time.monotonic()
                 try:
                     a = self._attempt(n, customer_name, usecase_ask, grounding, feedback, say, frozen=frozen,
-                                      on_plan=start_media)
+                                      on_plan=on_plan)
                 except StepFailed as e:
                     if best is None:
                         raise
@@ -225,8 +320,8 @@ class UseCaseSynthesizer:
                 last = a.passed or not a.judged or n == total or not improved
                 if not improved and not a.passed:
                     say(f"Attempt {n} did not improve the score; keeping the best attempt instead of retrying again")
-                if frozen is None and _story_accepted(a.rubric):
-                    frozen = {"deliverables": a.blueprint["deliverables"], "story": a.blueprint.get("story") or {}}
+                if demo is None and _story_accepted(a.rubric):
+                    demo = {"deliverables": a.blueprint["deliverables"], "story": a.blueprint.get("story") or {}}
                 status = ("PASSED" if a.passed else "NOT JUDGED" if not a.judged
                           else "BEST EFFORT" if last else "RETRY")
                 stats.append({"attempt": n, "score_pct": a.score, "status": status,
@@ -237,6 +332,12 @@ class UseCaseSynthesizer:
                 if last:
                     break
                 feedback = "; ".join(a.fixes)[:500]
+                if _only_code_failed(a.rubric):  # the design passed every check: keep it, rewrite only the code
+                    say(f"Attempt {n}: the design passed every check; the next attempt keeps it (with its clips and "
+                        "acceptance tests) and rewrites pipeline.py only")
+                    frozen = {**{k: a.blueprint.get(k) for k in PLAN_KEYS}, "planner": a.models["planner"]}
+                else:
+                    frozen = demo
         except BaseException:
             if media["started"]:  # no build, no demo: stop the clip job instead of spending on it
                 dlv.cancel(project_dir, "The build that planned these clips failed.")
@@ -246,21 +347,16 @@ class UseCaseSynthesizer:
         stages = best.blueprint["stages"]
         deliverables = best.blueprint["deliverables"]
         rubric, score = best.rubric, best.score
+        if deliverables and getattr(self.s, "generate_media", True):  # the final plan: a no-op when it is the one
+            self.doctor.guard("Demo output", lambda: dlv.start(  # already generating, else matching clips are reused
+                self.s, build_id=build_id, project_dir=project_dir, customer=customer_name, ask=usecase_ask,
+                summary=best.blueprint["summary"], deliverables=deliverables,
+                story=best.blueprint.get("story") or {}), None, retries=0)
         accepted: Optional[dict] = None
-        run_acceptance = bool(getattr(self.s, "acceptance_enabled", False)) and bool(stages)
-        with ThreadPoolExecutor(1) as ex:  # the acceptance tests run while the demo output starts
-            pending = (ex.submit(self._acceptance, customer_name, usecase_ask, best.blueprint, grounding)
-                       if run_acceptance else None)
-            if pending is not None:
-                say(f"Acceptance tests: planning end-to-end tests from the ask ({ROLES['planner']} tier) and running "
-                    "them on the design")
-            if deliverables and getattr(self.s, "generate_media", True):  # the final plan: reuse matching clips
-                self.doctor.guard("Demo output", lambda: dlv.start(
-                    self.s, build_id=build_id, project_dir=project_dir, customer=customer_name, ask=usecase_ask,
-                    summary=best.blueprint["summary"], deliverables=deliverables,
-                    story=best.blueprint.get("story") or {}), None, retries=0)
-            if pending is not None:
-                accepted = pending.result()
+        if tests is not None and stages:  # started at that design's plan; usually finished by now
+            say("Acceptance tests: " + ("finished while the code was built" if tests.done(best.blueprint) else
+                                        "waiting for the end-to-end tests of the chosen design to finish"))
+            accepted = tests.result(best.blueprint)
         if accepted is not None:
             row = accepted["row"]
             rubric = acceptance.with_row(rubric, row)
@@ -329,30 +425,42 @@ class UseCaseSynthesizer:
     def _attempt(self, n: int, customer: str, ask: str, grounding: List[dict], feedback: str,
                  say: Callable[[str], None], frozen: Optional[dict] = None,
                  on_plan: Optional[Callable[[dict], None]] = None) -> Attempt:
-        """One plan -> code -> judge pass. Raises StepFailed when the planner or the code generator still fails
-        after the Troubleshooter's retries and fallbacks; a failed judge leaves the attempt unjudged."""
-        say(f"Attempt {n}: planning the architecture and choosing model features ({ROLES['planner']} tier)")
-        catalog = self.resolver.catalog()
-        blueprint, planner = self.doctor.run("Planner", ROLES["planner"], lambda m, loc, hint: brain.plan(
-            self.s, m, loc, hint, customer=customer, ask=ask, grounding=grounding, catalog=catalog,
-            max_assets=self.s.max_media_assets, feedback=feedback))
+        """One plan -> code -> judge pass. `frozen` is what an earlier attempt settled: the deliverables + story the
+        judge accepted (kept, so their clips are reused), or the whole design plus the model that planned it when
+        every design check passed and only the code failed (then the planner is skipped, pipeline.py is rewritten
+        from the reviewer feedback, and the clips and acceptance tests of that design carry on). Raises StepFailed
+        when the planner or the code generator still fails after the Troubleshooter's retries and fallbacks; a
+        failed judge leaves the attempt unjudged."""
+        kept = frozen is not None and "stages" in frozen
+        if kept:
+            say(f"Attempt {n}: keeping the design that passed; rewriting pipeline.py from the reviewer feedback")
+            blueprint = {"summary": frozen.get("summary") or "", "stages": frozen["stages"],
+                         "deliverables": frozen.get("deliverables") or [], "story": frozen.get("story") or {}}
+            planner = {"model": frozen.get("planner") or ""}
+        else:
+            say(f"Attempt {n}: planning the architecture and choosing model features ({ROLES['planner']} tier)")
+            catalog = self.resolver.catalog()
+            blueprint, planner = self.doctor.run("Planner", ROLES["planner"], lambda m, loc, hint: brain.plan(
+                self.s, m, loc, hint, customer=customer, ask=ask, grounding=grounding, catalog=catalog,
+                max_assets=self.s.max_media_assets, feedback=feedback))
+            current = self.resolver.catalog()  # the troubleshooter may have switched models
+            self._attach(blueprint["stages"], current)
+            manifest.attach_models(blueprint["deliverables"], current)
+            if frozen is not None:  # accepted by the judge in an earlier attempt: keep them so their clips are reused
+                blueprint.update(deliverables=frozen["deliverables"], story=frozen["story"])
         stages = blueprint["stages"]
-        current = self.resolver.catalog()  # the troubleshooter may have switched models
-        self._attach(stages, current)
-        manifest.attach_models(blueprint["deliverables"], current)
-        if frozen is not None:  # accepted by the judge in an earlier attempt: keep them so their clips are reused
-            blueprint.update(deliverables=frozen["deliverables"], story=frozen["story"])
         if on_plan:
             on_plan(blueprint)
 
-        say(f"Attempt {n}: generating pipeline.py ({ROLES['codegen']} tier) while citing official docs for "
-            f"{len(stages)} stages (MCP)")
+        say(f"Attempt {n}: generating pipeline.py ({ROLES['codegen']} tier)"
+            + ("" if kept else f" while citing official docs for {len(stages)} stages (MCP)"))
         with ThreadPoolExecutor(1) as ex:
-            citations = ex.submit(self._citations, stages, grounding)
+            citations = None if kept else ex.submit(self._citations, stages, grounding)  # kept stages are cited
             code, coder = self.doctor.run("Code generator", ROLES["codegen"], lambda m, loc, hint: brain.write_pipeline(
                 self.s, m, loc, hint, customer=customer, blueprint=blueprint, feedback=feedback))
-            for s, (title, url) in zip(stages, citations.result()):
-                s["doc_title"], s["doc_url"] = title, url
+            if citations is not None:
+                for s, (title, url) in zip(stages, citations.result()):
+                    s["doc_title"], s["doc_url"] = title, url
 
         say(f"Attempt {n}: judging against the rubric ({ROLES['judge']} tier) while confirming dependencies in "
             "official docs (MCP)")

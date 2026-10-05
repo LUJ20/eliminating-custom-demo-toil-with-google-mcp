@@ -106,7 +106,7 @@ class DeckAndPackageStoryTest(OfflineTestCase):
                                   stages=[], rubric=[], attempts=[], files=["pipeline.py"], whats_new=[],
                                   mode="Showcase", deliverables=ds, score=90.0, final_status="PASSED", story=STORY)
         prs = pptx.Presentation(path)
-        self.assertEqual(len(prs.slides), 7)
+        self.assertEqual(len(prs.slides), 5)
         first = " ".join(sh.text_frame.text for sh in prs.slides[0].shapes if sh.has_text_frame)
         self.assertIn("The story: Aiko Makes Her Connection", first)
         self.assertIn("Warm handoff", first)

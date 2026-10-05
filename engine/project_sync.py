@@ -249,19 +249,32 @@ def _loop(settings: Settings, interval: float) -> None:
         try:
             if not restored:
                 restored = restore(settings)
+                if restored:
+                    RESTORED.set()
             backup(settings)
         except Exception:  # thread boundary: log with traceback, try again next round
             logger.exception("project backup/restore failed; retrying in %.0fs", interval)
         time.sleep(interval)
 
 
+RESTORED = threading.Event()  # set once the first restore from the bucket has completed
+_STARTED = False
+
+
+def started() -> bool:
+    """True when the sync loop runs in this process (so a restore is pending or done)."""
+    return _STARTED
+
+
 def start(settings: Optional[Settings] = None, interval: float = INTERVAL_S) -> Optional[threading.Thread]:
     """Restore the projects, then back them up every `interval` seconds, in a daemon thread. Returns the thread,
     or None (nothing started) when no valid bucket is configured."""
+    global _STARTED
     s = settings or get_settings()
     if not s.bucket or not valid_bucket(s.bucket):
         logger.info("project backup off: no Cloud Storage bucket configured")
         return None
+    _STARTED = True
     t = threading.Thread(target=_loop, args=(s, interval), name="project-sync", daemon=True)
     t.start()
     return t

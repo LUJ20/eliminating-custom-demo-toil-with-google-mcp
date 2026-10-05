@@ -21,8 +21,10 @@ import threading
 import streamlit as st
 
 from engine import build_editor
+from engine import charts
 from engine import deliverables as dlv
 from engine import manifest
+from engine import prebuild
 from engine import regression
 from engine import media
 from engine import story_doc
@@ -33,6 +35,7 @@ from engine.manifest import DATA_KINDS, MEDIA_KINDS, kind_label
 from engine.mcp_knowledge_client import McpKnowledgeClient
 from engine.model_resolver import ROLES, ModelResolver
 from engine.pii_sanitizer import AUDIT_FILE
+from engine.samples import SAMPLES
 from engine.slide_viewer import render_presentation_player
 from engine.troubleshooter import OutputError, StepFailed, Troubleshooter
 from engine.usecase_synthesizer import RESULT_FILE, UseCaseSynthesizer
@@ -46,46 +49,7 @@ MAX_CHAT_TURNS = 20
 MAX_OUTPUT_VIEW_BYTES = manifest.MAX_OUTPUT_CHARS * 4  # a data output larger than its contract is not rendered
 PPTX_MIME = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 MODES = ("Showcase: newest models, previews allowed", "Production: GA models only")
-PRESETS = {  # use cases only: the planner picks services, the resolver picks models
-    "Airline: multilingual live concierge": {
-        "customer": "Cymbal Air",
-        "ask": "Multilingual real-time voice and avatar concierge for Cymbal Air Rewards members: natural low-latency "
-               "conversation in English, Japanese, Spanish, French, German and Chinese, a consistent branded "
-               "voice, avatar lip-sync in each of these languages separately, and handoff to human agents."},
-    "Retail: real-time fraud detection": {
-        "customer": "Acme Retail",
-        "ask": "Detect fraudulent card transactions in real time from a stream of 5,000 events per second, score "
-               "them with a model, alert analysts within seconds, and keep a queryable history for audits."},
-    "Logistics: delivery tracking app": {
-        "customer": "Swift Logistics",
-        "ask": "Mobile app for customers and drivers with sign-in, live driver location on a map, optimized "
-               "delivery routes, push notifications for status changes, and an operations dashboard."},
-    "Healthcare: grounded knowledge assistant": {
-        "customer": "Global Healthcare Network",
-        "ask": "Clinician-facing assistant that answers questions from approved medical guidelines with "
-               "citations, extracts structured JSON summaries, and never answers outside the approved corpus."},
-    "Hospitality: cinematic video campaign": {
-        "customer": "Cymbal Resorts",
-        "ask": "Generate a cinematic 1080p promotional video campaign for new resorts with drone-style camera "
-               "moves, an original orchestral soundtrack, and brand-safe review before publishing."},
-    "Finance: enterprise search with citations": {
-        "customer": "Contoso Financial Services",
-        "ask": "Enterprise search assistant for employees that answers questions from internal policy documents, "
-               "product manuals and wiki pages stored in Google Drive and Cloud Storage, cites the exact source "
-               "passage for every answer, respects each employee's document permissions, and says it does not know "
-               "when the corpus has no answer."},
-    "Commerce: analytics agent with tickets": {
-        "customer": "Northwind Commerce",
-        "ask": "Analytics agent for the operations team that answers plain-language questions by writing and "
-               "running BigQuery SQL over the sales warehouse, explains the result with a chart, detects "
-               "week-over-week anomalies, and files a follow-up ticket with the evidence for each anomaly it finds, "
-               "asking for confirmation before any write action."},
-    "Insurance: claims document extraction": {
-        "customer": "Fabrikam Insurance",
-        "ask": "Claims intake pipeline that reads scanned claim forms, invoices and photos of damage uploaded by "
-               "customers, extracts policy number, dates, amounts and line items into validated structured JSON, "
-               "flags missing or inconsistent fields for a human reviewer, and stores the results for audit."},
-}
+PRESETS = SAMPLES  # the sample use cases (engine/samples.py): pre-built ahead of time by engine/prebuild.py
 CSS = """
 <style>
 .st-key-build_chat { position: sticky; top: 3.8rem; max-height: calc(100vh - 5rem); overflow-y: auto;
@@ -248,10 +212,6 @@ TIER_HEX = {  # capability tier -> (fill, border); same palette as the deck
     "music": ("#FEF7E0", "#E37400"), "embedding": ("#E0F7FA", "#00838F"),
 }
 DEFAULT_HEX = ("#FFFFFF", "#1A73E8")
-KIND_ICONS = {"video": "🎬", "image": "🖼️", "speech": "🔊", "music": "🎵", "text": "📝", "chat": "💬",
-              "structured": "📊", "agent_trace": "🤖"}
-
-
 def dot_text(value, limit: int = 60) -> str:
     """Text safe inside a double-quoted Graphviz label."""
     text = " ".join(str(value or "").split())[:limit]
@@ -295,7 +255,7 @@ def render_architecture(res: dict) -> None:
                     f'border-radius:6px;padding:12px 16px;margin-bottom:12px;font-size:0.92rem;line-height:1.5;">'
                     f'{html.escape(res["summary"])}</div>', unsafe_allow_html=True)
     models_line = ", ".join(f"{tier}: `{m['model']}`" for tier, m in res["models"].items()) or "none (no AI stage)"
-    st.info(f"Models ({res['mode']} mode, auto-resolved, newest verified): {models_line}")
+    st.caption(f"Models ({res['mode']} mode, auto-resolved, newest verified): {models_line}")
     st.graphviz_chart(build_architecture_dot(res.get("stages", []), res.get("deliverables") or []),
                       width="stretch")
 
@@ -481,10 +441,10 @@ def _asset_view(project_dir: str, d: dict, a: dict, build_id: str, settings: Set
                 st.markdown(f.read())  # model text as markdown; HTML stays disabled
         st.caption(f"{a.get('model')} · {a.get('seconds')} s" + (f" · language {a['language']}" if a.get("language") else ""))
         if a.get("carried_over"):
-            st.caption("♻️ Reused unchanged from the previous version")
+            st.caption("Reused unchanged from the previous version")
         render_qa(a.get("qa") or {})
         if a.get("note"):
-            st.warning(md_escape(a["note"]))
+            st.caption(md_escape(a["note"]))
         if a.get("script"):
             st.caption(f"Script: {md_escape(a['script'])}")
         dl, again = st.columns(2)
@@ -494,7 +454,7 @@ def _asset_view(project_dir: str, d: dict, a: dict, build_id: str, settings: Set
         flagged = (a.get("qa") or {}).get("verdict") == "fail"
         if dlv.can_regenerate(kind):
             clip = kind in MEDIA_KINDS
-            if again.button("↻ Regenerate this clip" if clip else "↻ Regenerate this output",
+            if again.button("Regenerate this clip" if clip else "Regenerate this output",
                             key=f"regen_{build_id}_{d['id']}_{a['label']}", width="stretch",
                             type="primary" if flagged else "secondary", disabled=dlv.is_running(project_dir),
                             help=("Makes this clip again with the same prompt and script, then checks it." if clip
@@ -528,27 +488,42 @@ def _media_panel(project_dir: str, did: str, build_id: str, settings: Settings) 
 
 
 def render_qa(qa: dict) -> None:
-    """The clip checker's verdict. Model-written findings are shown as escaped markdown or plain text."""
+    """The output checker's verdict as one quiet line (a collapsed expander); the reviewer's summary and each
+    check sit inside it. Model-written findings are shown as escaped markdown or plain text."""
     verdict = qa.get("verdict")
     if not verdict:
         return
-    who = f" by `{qa['model']}`" if qa.get("model") else ""
-    summary = md_escape(str(qa.get("summary", ""))[:400])
-    if verdict == "pass":
-        st.success(f"✅ Checked{who}: {summary}")
-    elif verdict == "fail":
-        again = " after one regeneration" if qa.get("regenerated") else ""
-        st.warning(f"⚠️ The check found issues{again}{who}: {summary}")
-    else:
-        st.caption(f"Not checked: {summary}")
     checks = qa.get("checks") or []
-    if checks and verdict != "skipped":
-        with st.expander(f"Checks ({sum(1 for c in checks if c.get('ok'))}/{len(checks)} passed)"):
-            st.text("\n".join(f"{'✓' if c.get('ok') else '✗'} {c.get('name', '')}: {c.get('why', '')}" for c in checks))
+    summary = md_escape(str(qa.get("summary", ""))[:400])
+    if verdict == "skipped" or not checks:
+        st.caption(f"Not checked: {summary}")
+        return
+    passed = sum(1 for c in checks if c.get("ok"))
+    who = f" by {qa['model']}" if qa.get("model") else ""
+    again = ", after one regeneration" if qa.get("regenerated") else ""
+    label = (f"Checks: {passed}/{len(checks)} passed{who}" if verdict == "pass"
+             else f"Checks: {passed}/{len(checks)} passed{again}{who}: open to see what failed")
+    with st.expander(label):
+        st.markdown(summary)
+        st.text("\n".join(f"{'pass' if c.get('ok') else 'FAIL'}  {c.get('name', '')}: {c.get('why', '')}" for c in checks))
+
+
+def render_chat_text(text: str) -> None:
+    """A chat message as markdown; a fenced block tagged `chart` (CSV: x-axis labels, then numeric columns) is
+    drawn as a line chart, as the assistant's system instruction asks for trends (engine/charts.py). A block that
+    is not readable as such a table stays visible as text."""
+    for kind, part in charts.parts(text):
+        if kind == "chart":
+            st.line_chart(part, height=260)
+        elif kind == "code":
+            st.code(part, language="text")
+        else:
+            st.markdown(part)
 
 
 def render_chat(res: dict, settings: Settings, d: dict) -> None:
-    """Interactive preview of a conversational deliverable, on the live model of its tier."""
+    """Interactive preview of a conversational deliverable, on the live model of its tier. The first turn (the
+    opener and the checked reply played during the build) is shown already; the box continues the conversation."""
     live = next((s for s in res["stages"] if s.get("tier") == "live" and s.get("model")), None)
     assets = d["assets"]
     labels = [a["label"] for a in assets]
@@ -558,15 +533,20 @@ def render_chat(res: dict, settings: Settings, d: dict) -> None:
                 _asset_view(res["project_dir"], d, a, res["build_id"], settings)
                 continue
             render_qa(a.get("qa") or {})
-            key = f"chat_{res['build_id']}_{d['id']}_{a['label']}"
-            history = st.session_state.setdefault(key, [])
-            with st.expander("System instruction (written by the media director)"):
+            key = f"chat_{res['build_id']}_{d['id']}_{a['label']}_{a.get('file', '')}"
+            played = dlv.chat_reply(res["project_dir"], a)
+            seed = ([{"role": "user", "text": a.get("script", "")},
+                     {"role": "model", "text": played, "model": a.get("model", "")}] if played and a.get("script")
+                    else [])
+            history = st.session_state.setdefault(key, list(seed))
+            with st.expander("System instruction and context (written by the media director)"):
                 st.text(a["prompt"])
             for h in history:
                 with st.chat_message("user" if h["role"] == "user" else "assistant"):
-                    st.markdown(h["text"])
+                    render_chat_text(h["text"])
             with st.form(f"form_{key}", clear_on_submit=True):
-                msg = st.text_input("Message", value="" if history else a.get("script", ""), max_chars=MAX_CHAT_CHARS)
+                msg = st.text_input("Message", value="" if history else a.get("script", ""), max_chars=MAX_CHAT_CHARS,
+                                    placeholder="Continue the conversation")
                 sent = st.form_submit_button("Send")
             if sent and msg.strip():
                 history.append({"role": "user", "text": msg.strip()})
@@ -580,18 +560,26 @@ def render_chat(res: dict, settings: Settings, d: dict) -> None:
                     history.append({"role": "model", "text": reply, "model": served["model"]})
                     st.rerun()
             last = next((h for h in reversed(history) if h["role"] == "model"), None)
-            note = f"Text preview on `{last['model']}`." if last else f"Text preview on the {d['tier']} tier."
+            note = f"Text preview on `{last['model']}`." if last and last.get("model") else \
+                f"Text preview on the {d['tier']} tier."
             if live:
                 note += f" In production the voice conversation runs on the Live API (`{live['model']}`)."
             st.caption(note)
+            c1, c2 = st.columns(2)
             if last and "speech" in ModelResolver(settings).catalog():
-                if st.button("🔊 Speak the last reply", key=f"speak_{key}"):
+                if c1.button("Speak the last reply", key=f"speak_{key}", width="stretch"):
                     try:
                         (audio, mime), _ = troubleshooter(settings).run("Spoken reply", "speech", lambda m, loc, hint: (
                             media.speech(settings, m, loc, last["text"][:1500]), 1.0))
                         st.audio(audio, format=mime)
                     except StepFailed as e:
                         st.error(f"Speech failed: {redact(str(e))[:300]}")
+            if c2.button("Play the first reply again", key=f"replay_{key}", width="stretch",
+                         disabled=dlv.is_running(res["project_dir"]),
+                         help="Plays the first turn again on the current model with the same setup, then checks it."):
+                if dlv.regenerate(settings, res["project_dir"], d["id"], a["label"]):
+                    st.session_state.pop(key, None)
+                    st.rerun(scope="app")
 
 
 def story_of(res: dict) -> dict:
@@ -620,7 +608,7 @@ def render_story_header(res: dict) -> None:
     story, beats = story_of(res), story_beats(res)
     if not (story.get("title") or beats):
         return
-    st.markdown(f"#### 🎬 {md_escape(story.get('title') or res.get('customer_name'))}")
+    st.markdown(f"#### {md_escape(story.get('title') or res.get('customer_name'))}")
     if story.get("logline"):
         st.markdown(f"*{md_escape(story['logline'])}*")
     if beats:
@@ -649,7 +637,7 @@ def render_demo_output(res: dict, settings: Settings) -> None:
     every = poll_every(project_dir)
     st.fragment(run_every=every)(_progress_panel)(project_dir, settings, every is not None)
     items = order_by_beats(state["deliverables"], res)
-    for tab, d in zip(st.tabs([f"{KIND_ICONS.get(d['kind'], '•')} {d['title']}" for d in items]), items):
+    for tab, d in zip(st.tabs([d["title"] for d in items]), items):
         with tab:
             st.caption(f"{md_escape(d['brief'])} · {md_escape(kind_label(d['kind']))}"
                        + (f" · {d['tier']} tier" if d.get("tier") else ""))
@@ -659,73 +647,110 @@ def render_demo_output(res: dict, settings: Settings) -> None:
                 st.fragment(run_every=every)(_media_panel)(project_dir, d["id"], res["build_id"], settings)
 
 
-def render_code(res: dict) -> None:
-    st.subheader("3. Generated code and PII audit")
-    code_col, audit_col = st.columns([3, 2])
-    with code_col:
-        st.markdown("**pipeline.py** (generated, reads model IDs from `usecase_config.json`)")
-        st.code(res["code"], language="python", height=380)
-    with audit_col:
-        audit = res["pii_audit"]
-        st.markdown("**PII audit**")
+def render_package(res: dict, pub: dict, dirty: bool, settings: Settings) -> None:
+    """The codebase package: file names, the PII verdict in one line, the zip and where it is published."""
+    st.subheader("3. Codebase package")
+    audit = res.get("pii_audit") or {}
+    zip_name = os.path.basename(res["zip_path"])
+    files_col, get_col = st.columns([3, 2])
+    with files_col:
+        st.markdown("**Files**: " + ", ".join(f"`{md_escape(name)}`" for name in res["package_files"]))
+        scanned = f"{audit.get('files_scanned_count', 0)} files scanned, {len(audit.get('redactions_applied', []))} redaction(s)"
         if audit.get("pii_audit_status") == "PASSED":
-            st.success("Status: PASSED")
+            st.caption(f"PII audit passed ({scanned}). Model IDs are read from `usecase_config.json`; the studio "
+                       "never executes the generated code: run it in your own project.")
         else:
-            st.error(f"Status: FAILED, {len(audit.get('remaining_findings', []))} finding(s) remain")
-        st.caption(f"Scanned {audit.get('files_scanned_count', 0)} files, "
-                   f"{len(audit.get('redactions_applied', []))} redaction(s) applied.")
-        st.markdown("**Package**: " + ", ".join(f"`{name}`" for name in res["package_files"]))
+            st.error(f"PII audit FAILED: {len(audit.get('remaining_findings', []))} finding(s) remain ({scanned}).")
+    with get_col:
+        if os.path.exists(res["zip_path"]):
+            with open(res["zip_path"], "rb") as f:
+                st.download_button("Download codebase (.zip)", data=f.read(), file_name=zip_name,
+                                   mime="application/zip", width="stretch", key=f"dl_zip_{res['build_id']}")
+        published = (pub.get("files") or {}).get(zip_name, "")
+        if pub.get("console_url") and not pub.get("error") and published:
+            st.link_button("Open in Google Drive" if pub.get("mode") == "drive" else "Open in Cloud Storage",
+                           pub["console_url"], width="stretch")
+            if published.startswith("gs://"):
+                st.code(published, language=None)
+        elif dirty:
+            st.caption("Save the chat changes (right panel) to publish this package.")
+        elif not settings.bucket and not settings.use_drive:
+            st.caption("Add a bucket or a Drive folder in the sidebar to publish the package.")
+
+
+def _acceptance_rows(summary: dict) -> list:
+    """One table row per acceptance test: result and the reason in one line."""
+    rows = []
+    for r in summary.get("results") or []:
+        checks = r.get("checks") or []
+        failed = [c for c in checks if not c.get("pass")]
+        why = ("; ".join(f"{c.get('name')}: {c.get('why')}" for c in failed) if failed
+               else f"all {len(checks)} check(s) passed")
+        rows.append({"Test": str(r.get("id", "")), "Stage": str(r.get("stage", "")), "Type": str(r.get("type", "")),
+                     "Pass": "yes" if r.get("pass") else "no", "Why": " ".join(str(why).split())[:220]})
+    return rows
 
 
 def render_acceptance(res: dict) -> None:
-    """End-to-end acceptance tests of this build's design: each test, its checks and the output (plain text)."""
+    """End-to-end acceptance tests of this build's design: a one-line verdict per test, inputs and outputs
+    behind an expander (plain text: model output is never rendered as markdown)."""
     summary = res.get("acceptance") or {}
     results = summary.get("results") or []
     if not results and not summary.get("note"):
         return
-    tests = {t.get("id"): t for t in summary.get("tests") or []}
     row = summary.get("row") or {}
-    with st.expander(f"🧪 Acceptance tests: {row.get('value', '')}", expanded=not row.get("pass", True)):
-        if summary.get("note"):
-            st.caption(md_escape(str(summary["note"]))[:400])
-        for r in results:
-            st.markdown(f"{'✅' if r.get('pass') else '❌'} **{md_escape(str(r.get('id', '')))}** · "
-                        f"{md_escape(str(r.get('type', '')))} · stage {md_escape(str(r.get('stage', '')))}")
-            st.caption(f"Requirement: {md_escape(str(r.get('requirement', '')))[:300]}")
-            t = tests.get(r.get("id")) or {}
-            if t.get("input"):
-                st.text(f"Input: {str(t['input'])[:600]}")
-            st.dataframe([{"Check": c.get("name"), "Pass": "✅" if c.get("pass") else "❌",
-                           "Critical": "yes" if c.get("critical") else "no", "Why": c.get("why")}
-                          for c in r.get("checks") or []], hide_index=True, width="stretch")
-            if r.get("output"):
-                st.text(f"Output: {str(r['output'])[:600]}")
+    st.markdown(f"**Acceptance tests: {md_escape(str(row.get('value', '')))}** · end-to-end tests written from "
+                "the ask and run on this design's models")
+    if summary.get("note"):
+        st.caption(md_escape(str(summary["note"]))[:300])
+    if results:
+        st.dataframe(_acceptance_rows(summary), hide_index=True, width="stretch")
+        tests = {t.get("id"): t for t in summary.get("tests") or []}
+        with st.expander("Inputs and outputs of each test"):
+            for r in results:
+                t = tests.get(r.get("id")) or {}
+                st.markdown(f"**{md_escape(str(r.get('id', '')))}** · {'passed' if r.get('pass') else 'failed'} · "
+                            f"requirement: {md_escape(str(r.get('requirement', '')))[:200]}")
+                if t.get("input"):
+                    st.text(f"Input: {str(t['input'])[:500]}")
+                if r.get("output"):
+                    st.text(f"Output: {str(r['output'])[:500]}")
+                st.dataframe([{"Check": c.get("name"), "Pass": "yes" if c.get("pass") else "no",
+                               "Critical": "yes" if c.get("critical") else "no", "Why": c.get("why")}
+                              for c in r.get("checks") or []], hide_index=True, width="stretch")
 
 
 def render_rubric(res: dict) -> None:
-    st.subheader("4. Evaluation rubric and per-attempt stats")
-    final = res["final_status"]
-    notice = st.success if final == "PASSED" else st.warning
-    notice(f"Final status: {final} (best of {len(res['attempt_stats'])} attempt(s))")
-    rubric_col, attempts_col = st.columns([3, 2])
-    with rubric_col:
-        st.markdown("**Rubric**")
-        rows = list(res["eval_metrics"])
-        quality = dlv.quality_row(dlv.load_status(res["project_dir"])) if res.get("project_dir") else None
-        if quality:  # live: clips finish after the build is scored, so this row is read from the job status
-            rows.append(quality)
-        st.dataframe([{"Criterion": m["metric"], "Result": m["value"], "Pass": "✅" if m["pass"] else "❌",
-                       "Threshold": m["threshold"], "Method": m["method"], "Notes": m["notes"]}
-                      for m in rows], hide_index=True, width="stretch")
-        if quality:
-            render_acceptance(res)
-            st.caption("“Demo output quality” is live: it updates as clips finish and their checks run. "
-                       "It is shown next to the build score, not averaged into it.")
-    with attempts_col:
-        st.markdown("**Attempts**")
+    st.subheader("4. Scorecard")
+    final, attempts = res["final_status"], res["attempt_stats"]
+    best = max((a.get("score_pct") or 0 for a in attempts), default=None)
+    acc = (res.get("acceptance") or {}).get("row") or {}
+    line = f"**{final}**" + (f" · build score {best}%" if best is not None else "") \
+        + f" · {len(attempts)} attempt(s)" + (f" · acceptance tests {acc['value']}" if acc.get("value") else "")
+    st.markdown(line)
+    st.caption("BEST EFFORT means the best attempt missed at least one threshold; the Why column says which and why. "
+               "Rows marked judge are scored 1-5 by a Gemini model, the others are computed by the studio.")
+    rows = list(res["eval_metrics"])
+    quality = dlv.quality_row(dlv.load_status(res["project_dir"])) if res.get("project_dir") else None
+    if quality:  # live: clips finish after the build is scored, so this row is read from the job status
+        rows.append(quality)
+    st.dataframe([{"Check": m["metric"], "Result": m["value"], "Threshold": m["threshold"],
+                   "Pass": "yes" if m["pass"] else "no", "Why": " ".join(str(m.get("notes") or "").split())}
+                  for m in rows], hide_index=True, width="stretch")
+    if quality:
+        st.caption("Demo output quality is live: it updates as clips finish and their checks run, next to the "
+                   "build score, not averaged into it.")
+    render_acceptance(res)
+
+    with st.expander(f"Attempts: {len(attempts)} · how each retry improved the build"):
         st.dataframe([{"#": a["attempt"], "Score %": a["score_pct"], "Status": a["status"], "Seconds": a["seconds"],
-                       "Fix fed to next attempt": a["patch_applied"], "Planner": a["planner"], "Codegen": a["coder"],
-                       "Judge": a["judge"]} for a in res["attempt_stats"]], hide_index=True, width="stretch")
+                       "Planner": a["planner"], "Codegen": a["coder"], "Judge": a["judge"]} for a in attempts],
+                     hide_index=True, width="stretch")
+        for a in attempts:
+            if a.get("patch_applied") not in ("", "-", None):
+                st.caption(f"After attempt {a['attempt']}: {md_escape(str(a['patch_applied']))[:400]}")
+        methods = {m["metric"]: m.get("method", "") for m in res["eval_metrics"]}
+        st.caption("Scoring method per row: " + "; ".join(f"{k}: {v}" for k, v in methods.items() if v))
 
     incidents = res.get("incidents") or []
     fixed = sum(1 for i in incidents if i.get("outcome") == "auto-fixed")
@@ -763,7 +788,7 @@ def story_script(res: dict) -> tuple:
 
 
 def render_story_script(res: dict, settings: Settings, pub: dict, path: str, doc: str) -> None:
-    st.markdown("#### 🎬 Demo story script")
+    st.markdown("#### Demo story script")
     st.caption("The story, scene by scene, with every clip's script: read it while you present.")
     gdoc = pub.get("story_doc") or {}
     edit_url, embed_url = gdoc.get("edit_url", ""), gdoc.get("embed_url", "")
@@ -784,25 +809,34 @@ def render_story_script(res: dict, settings: Settings, pub: dict, path: str, doc
         st.iframe(doc, height=640)  # app-made HTML: every model/user value in it is escaped, no scripts
 
 
-def render_downloads(res: dict, settings: Settings) -> None:
-    st.subheader("5. Story script, architecture deck and codebase")
+def ensure_published(res: dict, settings: Settings) -> tuple:
+    """Publish the build's files once per build, and again only when the story script changed (scripts written
+    later, or a Save that published without it) or the deck was regenerated for a new slide layout; uploads are
+    hash-based, so only the changed file goes up. -> (publish info or {}, story script path, story script html, dirty)."""
     key = f"publish_{res['build_id']}"
     dirty = build_editor.is_dirty(res["project_dir"])
+    try:  # a saved demo built before the current slides: redraw its deck from the stored result (no model call)
+        redrawn = build_editor.refresh_deck(settings, res)
+    except Exception as e:  # the old deck still opens; say so in the log, not on the page
+        logger.warning("deck refresh of %s failed: %s", res.get("slug"), redact(str(e))[:200])
+        redrawn = False
     story_file, story_html, story_sha = story_script(res)
     pub = st.session_state.get(key)
-    # Publish once per build, and again only when the story script changed (scripts written later, or a Save
-    # that published without it). Uploads are hash-based, so only the changed file goes up.
-    stale = pub is not None and pub.get("story_sha") != story_sha
-    if dirty and pub is None:
-        st.info("This build has unsaved chat changes. Save them (right panel) to publish the updated deck.")
-    elif not dirty and (pub is None or stale):
+    stale = pub is not None and (pub.get("story_sha") != story_sha or redrawn)
+    if not dirty and (pub is None or stale):
         files = [f for f in (res["deck_path"], res["zip_path"], os.path.join(res["project_dir"], AUDIT_FILE),
                              story_file) if f and os.path.exists(f)]
         with st.spinner(f"Publishing to {'Google Drive' if settings.use_drive else 'Cloud Storage'}..."):
             pub = ArtifactStore(settings).publish(res["slug"], files)
         pub["story_sha"] = story_sha
         st.session_state[key] = pub
-    pub = pub or {}
+    return pub or {}, story_file, story_html, dirty
+
+
+def render_downloads(res: dict, settings: Settings, pub: dict, story_file: str, story_html: str, dirty: bool) -> None:
+    st.subheader("5. Story script and architecture deck")
+    if dirty and not pub:
+        st.info("This build has unsaved chat changes. Save them (right panel) to publish the updated deck.")
     if pub.get("fallback_reason"):
         st.warning(redact(pub["fallback_reason"])[:400])
     if pub.get("error"):
@@ -810,20 +844,17 @@ def render_downloads(res: dict, settings: Settings) -> None:
     elif pub.get("location"):
         st.caption(f"Published to {pub['location']}")
     render_story_script(res, settings, pub, story_file, story_html)
-    st.markdown("#### 🗂️ Architecture deck and codebase")
+    st.markdown("#### Architecture deck")
+    st.caption("Five editable slides built from the design, the demo plan and the scorecard, with the talk track in "
+               "the speaker notes.")
     slides_url = (pub.get("deck") or {}).get("edit_url", "")
-    b1, b2, b3 = st.columns(3)
+    b1, b2 = st.columns(2)
     with b1:
         if os.path.exists(res["deck_path"]):
             with open(res["deck_path"], "rb") as f:
                 st.download_button("Download deck (.pptx)", data=f.read(), file_name=os.path.basename(res["deck_path"]),
                                    mime=PPTX_MIME, width="stretch", key=f"dl_deck_{res['build_id']}")
     with b2:
-        if os.path.exists(res["zip_path"]):
-            with open(res["zip_path"], "rb") as f:
-                st.download_button("Download codebase (.zip)", data=f.read(), file_name=os.path.basename(res["zip_path"]),
-                                   mime="application/zip", width="stretch", key=f"dl_zip_{res['build_id']}")
-    with b3:
         if slides_url:
             st.link_button("Open in Google Slides", slides_url, width="stretch")
         elif pub.get("console_url") and not pub.get("error"):
@@ -846,11 +877,8 @@ def _save_build(res: dict, settings: Settings) -> None:
 
 
 def chat_suggestions(res: dict) -> list:
-    """Starter questions for this build: a failed rubric row, one output's script, and production scale."""
+    """Starter questions for this build: one output's script, and production scale."""
     out = []
-    failed = next((m.get("metric") for m in res.get("eval_metrics", []) if not m.get("pass")), "")
-    if failed:
-        out.append(f"Why did '{failed}' not pass, and how do we fix it?")
     variants = [(d.get("title", ""), v.get("label", "")) for d in res.get("deliverables", [])
                 if d.get("kind") in ("video", "speech") for v in d.get("variants", [])]
     pick = next((x for x in variants if x[1].lower().startswith("jap")), variants[1] if len(variants) > 1 else
@@ -876,8 +904,8 @@ def render_chat_turn(h: dict) -> None:
         elif h["role"] != "user" and h.get("intent") in ("question", "both"):
             st.caption("No official doc matched this question; the answer comes from the build itself.")
         if h["role"] != "user" and h.get("citations_verified") is not None:
-            st.caption("✓ Citations verified against the docs" if h["citations_verified"] else
-                       "⚠ Some citations could not be verified against the docs")
+            st.caption("Citations verified against the docs" if h["citations_verified"] else
+                       "Some citations could not be verified against the docs")
             for c in (h.get("unsupported_citations") or [])[:5]:
                 st.caption(f"[{int(c.get('n') or 0)}] {md_escape(str(c.get('why') or ''))[:200]}")
 
@@ -891,8 +919,8 @@ def render_build_chat(res: dict, settings: Settings) -> None:
     pending_key = f"chat_pending_{res['slug']}"
     dirty = build_editor.is_dirty(project_dir)
     with st.container(key="build_chat"):
-        st.markdown("**💬 Ask or change this build**")
-        st.caption(("🟠 Unsaved changes" if dirty else "🟢 Saved") + " · answers cite official Google docs")
+        st.markdown("**Ask or change this build**")
+        st.caption(("Unsaved changes" if dirty else "Saved") + " · answers cite official Google docs")
         for h in history[-MAX_CHAT_TURNS:]:
             render_chat_turn(h)
         if not history:
@@ -926,18 +954,18 @@ def render_build_chat(res: dict, settings: Settings) -> None:
                     st.session_state[f"deliverables_started_{out['result']['build_id']}"] = True
             st.rerun()
         u, s_, d_ = st.columns(3)
-        if u.button("↶ Undo", width="stretch", disabled=not build_editor.can_undo(project_dir),
+        if u.button("Undo", width="stretch", disabled=not build_editor.can_undo(project_dir),
                     key=f"undo_{res['slug']}"):
             st.session_state["solution_result"] = new = build_editor.undo(settings, project_dir)
             if new.get("deliverables_started"):
                 st.session_state[f"deliverables_started_{new['build_id']}"] = True
             history.append({"role": "model", "text": "Undid the last change."})
             st.rerun()
-        if s_.button("💾 Save", width="stretch", disabled=not dirty, key=f"save_{res['slug']}"):
+        if s_.button("Save", width="stretch", disabled=not dirty, key=f"save_{res['slug']}"):
             with st.spinner("Saving and publishing…"):
                 _save_build(res, settings)
             st.rerun()
-        if d_.button("🗑 Discard", width="stretch", disabled=not dirty, key=f"discard_{res['slug']}"):
+        if d_.button("Discard", width="stretch", disabled=not dirty, key=f"discard_{res['slug']}"):
             discard_dialog(settings)
 
 
@@ -971,6 +999,7 @@ def leave_dialog(settings: Settings) -> None:
         st.rerun()
     if c.button("Cancel", width="stretch"):
         st.session_state.pop("pending_build", None)
+        st.session_state.pop("force_build", None)
         st.rerun()
 
 
@@ -1048,13 +1077,58 @@ if bucket and not valid_bucket(bucket):
 settings = base.for_project(project_id, bucket=bucket or default_bucket(project_id),
                             drive_folder_id=drive_folder_id(drive_link), allow_preview=(mode == MODES[0]))
 
+def fill_form(customer: str, ask: str, sample: str = "Custom") -> None:
+    """Show these values in the use-case form (and this sample in the dropdown) on the next run: widget state can
+    only be set before the widgets draw, so the fill is queued and applied at the top of the sidebar."""
+    st.session_state["form_fill"] = (str(customer or ""), str(ask or ""), sample)
+
+
+def sample_for(res: dict) -> str:
+    """The sample label whose customer and ask this build is (whitespace aside), else "Custom"."""
+    def norm(text) -> str:
+        return " ".join(str(text or "").split())
+    for label, p in PRESETS.items():
+        if p["customer"] == res.get("customer_name") and norm(p["ask"]) == norm(res.get("usecase_ask")):
+            return label
+    return "Custom"
+
+
 with st.sidebar:
     if drive_link and not settings.drive_folder_id:
         st.warning("Could not read a folder ID from that link.")
 
     st.markdown("---")
     st.subheader("Sample use cases")
-    selected_preset = st.selectbox("Choose a sample:", ["Custom"] + list(PRESETS))
+    fill = st.session_state.pop("form_fill", None)
+    if fill:
+        st.session_state["form_customer"], st.session_state["form_ask"], st.session_state["sample_pick"] = fill
+        st.session_state["form_sample"] = fill[2]
+    selected_preset = st.selectbox("Choose a sample:", ["Custom"] + list(PRESETS), key="sample_pick")
+    if selected_preset != st.session_state.get("form_sample"):  # the choice changed: the form shows that sample
+        st.session_state["form_sample"] = selected_preset
+        chosen = PRESETS.get(selected_preset)
+        st.session_state["form_customer"] = chosen["customer"] if chosen else ""
+        st.session_state["form_ask"] = chosen["ask"] if chosen else ""
+    if selected_preset == "Custom":
+        st.session_state.pop("sample_shown", None)
+    else:
+        sample = PRESETS[selected_preset]
+        ready = prebuild.current(settings, sample["customer"], sample["ask"])
+        if ready:
+            st.caption("Pre-built demo ready: it opens below. Change the text to build a new one.")
+            if st.session_state.get("sample_shown") != selected_preset:
+                shown = st.session_state.get("solution_result") or {}
+                if shown.get("project_dir") and shown["project_dir"] != ready \
+                        and build_editor.is_dirty(shown["project_dir"]):
+                    st.caption("The open build has unsaved chat changes; save or discard them to open the sample.")
+                else:
+                    if shown.get("project_dir") != ready:
+                        st.session_state["solution_result"] = build_editor.load_result(settings, ready)
+                    st.session_state["sample_shown"] = selected_preset
+        elif prebuild.building(sample["customer"]):
+            st.caption("This sample is being pre-built right now; Create Custom Demo joins that build.")
+        else:
+            st.caption("No pre-built demo for this sample on the current models yet; Create Custom Demo builds it.")
 
 resolver = ModelResolver(settings)
 if resolver.is_empty():
@@ -1069,12 +1143,23 @@ else:
 regression.install(settings)  # after a model promotion: re-build the reference use cases, roll back on a regression
 
 
+@st.cache_resource(show_spinner=False)
+def prebuild_boot(settings: Settings) -> bool:
+    """Once per server start: pre-build the sample demos that are missing or built on older models (background),
+    and keep them current after every model promotion. -> True when pre-building is on."""
+    prebuild.install(settings)
+    return prebuild.start_background(settings) is not None
+
+
+prebuild_boot(settings)
 
 with st.form("usecase_form"):
-    preset = PRESETS.get(selected_preset, next(iter(PRESETS.values())))
-    customer_input = st.text_input("Customer / brand name", value=preset["customer"], max_chars=120)
+    customer_input = st.text_input("Customer / brand name", key="form_customer", max_chars=120,
+                                   placeholder="e.g. Cymbal Air")
     ask_input = st.text_area("Use case and requirements (any Google service: Cloud, Firebase, Maps, Workspace, AI)",
-                             value=preset["ask"], height=130, max_chars=4000)
+                             key="form_ask", height=130, max_chars=4000,
+                             placeholder="What the demo must show, in plain words: the users, the languages, the "
+                                         "data, the outputs you want to see.")
     submitted = st.form_submit_button("Create Custom Demo")
 
 if submitted:
@@ -1091,20 +1176,49 @@ if submitted:
 
 if st.session_state.pop("run_pending", False) and st.session_state.get("pending_build"):
     customer, ask = st.session_state.pop("pending_build")
-    status = st.status("Resolving the use case...", expanded=True)
-    try:
-        result = UseCaseSynthesizer(settings).resolve_and_build(customer, ask, progress=status.write)
-    except StepFailed as e:
-        status.update(label="Build failed", state="error")
-        st.error(f"The troubleshooter could not recover automatically: {redact(str(e))[:400]}")
-        st.stop()
-    except Exception:  # UI boundary: keep the traceback in the log, show a short message
-        logger.exception("build failed")
-        status.update(label="Build failed", state="error")
-        st.error("Unexpected error during the build; the traceback is in the app log.")
-        st.stop()
-    st.session_state["solution_result"] = result
-    status.update(label=f"Done in {result['seconds']} s: {result['final_status']}", state="complete", expanded=False)
+    force = st.session_state.pop("force_build", False)
+    ready = None if force else prebuild.current(settings, customer, ask)
+    if ready is None and prebuild.building(customer):
+        with st.status(f"The sample demo for {customer} is being pre-built right now; waiting for it to finish...",
+                       expanded=False):
+            prebuild.wait(customer)
+        ready = None if force else prebuild.current(settings, customer, ask)
+    if ready:  # a finished build of exactly this ask on the models in use: open it instead of building again
+        st.session_state["solution_result"] = build_editor.load_result(settings, ready)
+        st.session_state["reused_build"] = (customer, ask)
+    else:
+        st.session_state.pop("reused_build", None)
+        status = st.status("Resolving the use case...", expanded=True)
+        try:
+            result = UseCaseSynthesizer(settings).resolve_and_build(customer, ask, progress=status.write)
+        except StepFailed as e:
+            status.update(label="Build failed", state="error")
+            st.error(f"The troubleshooter could not recover automatically: {redact(str(e))[:400]}")
+            st.stop()
+        except Exception:  # UI boundary: keep the traceback in the log, show a short message
+            logger.exception("build failed")
+            status.update(label="Build failed", state="error")
+            st.error("Unexpected error during the build; the traceback is in the app log.")
+            st.stop()
+        st.session_state["solution_result"] = result
+        status.update(label=f"Done in {result['seconds']} s: {result['final_status']}", state="complete",
+                      expanded=False)
+
+reused = st.session_state.get("reused_build")
+if reused and (st.session_state.get("solution_result") or {}).get("project_dir") == \
+        prebuild.project_dir(settings, reused[0]):
+    note, act = st.columns([4, 1])
+    note.info("This exact ask was already built on the current models, so the saved demo opened at once. "
+              "Change the text to build a new one, or rebuild this one from scratch.")
+    if act.button("Rebuild from scratch", key="rebuild_from_scratch", width="stretch"):
+        st.session_state.pop("reused_build", None)
+        st.session_state["pending_build"] = reused
+        st.session_state["force_build"] = True
+        if build_editor.is_dirty(st.session_state["solution_result"]["project_dir"]):
+            leave_dialog(settings)
+        else:
+            st.session_state["run_pending"] = True
+            st.rerun()
 
 with st.sidebar:
     projects = saved_projects(settings)
@@ -1121,7 +1235,8 @@ with st.sidebar:
                     and current["project_dir"] != target:
                 st.warning("The open build has unsaved chat changes; save or discard them first.")
             else:
-                st.session_state["solution_result"] = build_editor.load_result(settings, target)
+                st.session_state["solution_result"] = opened = build_editor.load_result(settings, target)
+                fill_form(opened.get("customer_name"), opened.get("usecase_ask"), sample_for(opened))
                 st.rerun()
     drafts = unsaved_drafts(settings)
     if drafts:
@@ -1134,7 +1249,8 @@ with st.sidebar:
             r1, r2 = st.columns([3, 2])
             r1.markdown(f"`{md_escape(name)}`")
             if d != current_dir and r2.button("Resume", key=f"resume_{i}", width="stretch"):
-                st.session_state["solution_result"] = build_editor.load_result(settings, d)
+                st.session_state["solution_result"] = opened = build_editor.load_result(settings, d)
+                fill_form(opened.get("customer_name"), opened.get("usecase_ask"), sample_for(opened))
                 st.rerun()
 
 if "solution_result" in st.session_state:
@@ -1149,9 +1265,10 @@ if "solution_result" in st.session_state:
         st.markdown("---")
         render_demo_output(res, settings)
         st.markdown("---")
-        render_code(res)
+        pub, story_file, story_html, dirty = ensure_published(res, settings)
+        render_package(res, pub, dirty, settings)
         st.markdown("---")
         render_rubric(res)
         st.markdown("---")
-        render_downloads(res, settings)
+        render_downloads(res, settings, pub, story_file, story_html, dirty)
 

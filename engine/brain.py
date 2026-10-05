@@ -396,8 +396,14 @@ For every deliverable and every variant, return "prompt" and "script":
 - speech: prompt = a short delivery instruction such as "Say warmly and clearly"; the script is what is said.
 - music: prompt = genre, instruments, tempo and mood.
 - text: prompt = the full instruction to write the artifact in the variant's language.
-- chat: prompt = the system instruction of the assistant (persona, scope, tone, when to hand off to a human),
-  answering in the variant's language; script = a realistic first message from a user in that language.
+- chat: prompt = the system instruction of the assistant, answering in the variant's language: persona, scope,
+  tone, when to hand off to a human, then a "Context" section with everything it needs to answer the first message
+  and the next few turns without asking for anything: the scene's facts and the hero's records as a small data
+  block (5 to 15 rows or key figures with names, dates and numbers, consistent with the solution's data outputs),
+  and this rule verbatim: "When asked for a chart or a trend, include the series as a fenced code block tagged
+  chart containing CSV with a header row (first column the x-axis labels, then 1 to 3 numeric columns), then state
+  the finding in one or two sentences." script = a realistic first message from a user in that language that the
+  assistant can answer from that context (never one that needs an attachment or data the assistant lacks).
 - structured: prompt = the full instruction to produce the data this system returns in the scene (no script):
   what the result is (extracted fields, an analytics table, ranked recommendations, or search results with their
   sources), its columns or fields, how many rows, and realistic values grounded in the scene and the hero (names,

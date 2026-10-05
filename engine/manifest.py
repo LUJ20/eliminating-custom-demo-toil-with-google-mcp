@@ -45,7 +45,7 @@ KIND_LABELS = {  # how a kind is named to a viewer (UI, story script, deck)
 }
 MEDIA_KINDS = frozenset({"video", "image", "speech", "music"})  # generated files, counted against the cap
 DATA_KINDS = frozenset({"structured", "agent_trace"})  # JSON outputs generated on a text tier
-REGENERABLE_KINDS = MEDIA_KINDS | DATA_KINDS | {"text"}  # one ready asset can be made again (not chat: no file)
+REGENERABLE_KINDS = MEDIA_KINDS | DATA_KINDS | {"text", "chat"}  # one ready asset can be made again (a chat: its first reply)
 MAX_DELIVERABLES = 6
 MAX_VARIANTS = 8
 LANG_RE = re.compile(r"^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$")  # BCP-47, e.g. ja, pt-BR, zh-Hans

@@ -1,14 +1,14 @@
-"""Architecture deck: six editable slides (seven when the build tells a story, which opens the deck) built from native PowerPoint shapes and tables (they stay editable
-after import into Google Slides). Every word on a slide or in the speaker notes comes from the build itself:
-the planner's design, the deliverables manifest, the rubric, the attempts and the documented model features.
-Nothing is invented (no ROI claims, no canned bullets).
+"""Architecture deck: five editable slides built from native PowerPoint shapes and tables (they stay editable after
+import into Google Slides). Every word on a slide or in the speaker notes comes from the build itself: the
+planner's design, the deliverables manifest, the rubric, the attempts and the documented model features. Nothing
+is invented (no ROI claims, no canned bullets). The speaker notes carry the talk track for each slide.
 
-  1. Overview: customer, ask, solution summary, build status and score
-  2. Reference architecture: one card per stage, coloured by capability tier, with flow arrows
+  1. Opening: the demo story (hero, challenge, scenes, payoff) when the build has one, else the solution overview
+  2. Reference architecture: an editable flow diagram, one shape per stage coloured by capability tier, with
+     arrows, a legend and one speaker-note point per stage
   3. Demo deliverables: what the demo lets a viewer see or hear, per kind, model and variant
-  4. Evaluation: rubric rows (pass / fail from the rubric itself) and attempts
-  5. What's new: documented features of the chosen models, with sources
-  6. Package and upkeep: files shipped and how models stay current
+  4. Proof: the scorecard (rubric rows, pass / fail from the rubric itself, attempts) and what's new in the models
+  5. Package and next steps: files shipped, how models stay current, how to run it
 """
 import os
 from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
@@ -54,6 +54,8 @@ MAX_CELL_CHARS = 240
 MAX_FEATURE_ROWS = 8
 MAX_RUBRIC_ROWS = 11
 BLANK_LAYOUT = 6
+DECK_VERSION = "4"  # the slide layout; stamped into every deck. Bump it when the slides change: saved decks made
+                    # by an older layout are then regenerated from the stored result (build_editor.refresh_deck)
 
 
 class Line(NamedTuple):
@@ -151,32 +153,44 @@ def _table(slide, header: List[str], rows: List[List[Cell]], widths: List[float]
 
 # ---------------------------------------------------------------------------------------------- slides
 LIGHT_GREEN = RGBColor(230, 244, 234)
+GREY_FILL = RGBColor(241, 243, 244)
+MAX_PER_ROW = 4
+TIER_LABELS = {"reasoning": "Gemini reasoning", "fast": "Gemini fast", "lite": "Gemini lite", "live": "Gemini Live",
+               "image": "Image", "image_fast": "Image (fast)", "video": "Video", "video_fast": "Video (fast)",
+               "speech": "Speech", "music": "Music", "embedding": "Embeddings"}
 
 
-def _story(prs, customer: str, story: dict, deliverables: List[dict]) -> None:
-    """Opening slide: the demo's story (hero, challenge, scenes in order, payoff); the notes are the talk track."""
+def _story(prs, customer: str, story: dict, deliverables: List[dict], ask: str, summary: str) -> None:
+    """Opening slide: the demo's story (hero, challenge, scenes in order, payoff) with the ask under it; the notes
+    are the talk track plus the ask and the solution in one line each."""
     beats = story.get("beats", [])[:6]
     plays = {b["id"]: [d["title"] for d in deliverables if d.get("beat") == b["id"]] for b in beats}
-    notes = "\n".join([f"Open: meet {story.get('hero', '')}. {story.get('challenge', '')}"]
-                      + [f"Scene {i}: {b['title']}. {b['scene']}" + (f" Watch: {', '.join(plays[b['id']])}."
-                                                                      if plays[b["id"]] else "")
+    def sent(text) -> str:  # one sentence, whether or not the story text already ends with a period
+        return str(text or "").strip().rstrip(".")
+
+    notes = "\n".join([f"Open: meet {sent(story.get('hero'))}. {story.get('challenge', '')}"]
+                      + [f"Scene {i}: {sent(b['title'])}. {sent(b['scene'])}." + (f" Watch: {', '.join(plays[b['id']])}."
+                                                                                 if plays[b["id"]] else "")
                          for i, b in enumerate(beats, 1)]
-                      + [f"Close: {story.get('payoff', '')}"])
+                      + [f"Close: {story.get('payoff', '')}", "",
+                         f"The ask ({customer}): {ask}", f"The solution: {summary}"])
     s = _new_slide(prs, _cut(f"The story: {story.get('title', '')}", 90), _cut(story.get("logline", ""), 160), notes)
-    col_w, gap = Inches(4.3), Inches(0.25)
+    col_w, gap, card_h, step = Inches(4.3), Inches(0.25), Inches(1.55), Inches(1.7)
     for i, (label, key, fill, border) in enumerate((("The hero", "hero", LIGHT_BLUE, BLUE),
                                                     ("The challenge", "challenge", WHITE, BORDER),
                                                     ("The payoff", "payoff", LIGHT_GREEN, GREEN))):
-        _card(s, LEFT, BODY_TOP + i * Inches(1.9), col_w, Inches(1.75),
+        _card(s, LEFT, BODY_TOP + i * step, col_w, card_h,
               [Line(label, 12, DARK_BLUE if i == 0 else GREEN if i == 2 else HEADER, True),
-               Line(_cut(story.get(key), 230), 11, BODY)], fill, border)
+               Line(_cut(story.get(key), 200), 10.5, BODY)], fill, border)
     right, width = LEFT + col_w + gap, CONTENT_W - col_w - gap
-    step = int((Inches(5.55)) / max(len(beats), 1))
+    beat_step = int(Inches(5.1) / max(len(beats), 1))
     for i, b in enumerate(beats):
-        lines = [Line(f"{i + 1}. {_cut(b['title'], 60)}", 12, HEADER, True), Line(_cut(b["scene"], 170), 10, BODY)]
+        lines = [Line(f"{i + 1}. {_cut(b['title'], 60)}", 11.5, HEADER, True), Line(_cut(b["scene"], 150), 9.5, BODY)]
         if b.get("feature"):
-            lines.append(Line(f"Proves: {_cut(b['feature'], 110)}", 9, BLUE))
-        _card(s, right, BODY_TOP + i * step, width, step - Inches(0.1), lines)
+            lines.append(Line(f"Proves: {_cut(b['feature'], 100)}", 8.5, BLUE))
+        _card(s, right, BODY_TOP + i * beat_step, width, beat_step - Inches(0.1), lines)
+    _textbox(s, LEFT, Inches(6.55), CONTENT_W, Inches(0.8),
+             [Line(f"The ask: {_cut(ask, 260)}", 10, MUTED), Line(f"The solution: {_cut(summary, 260)}", 10, MUTED)])
 
 
 def _overview(prs, customer: str, ask: str, summary: str, mode: str, final_status: str, score: float,
@@ -184,7 +198,9 @@ def _overview(prs, customer: str, ask: str, summary: str, mode: str, final_statu
     ai = [s for s in stages if s.get("model")]
     notes = (f"Customer: {customer}\nAsk: {ask}\nSolution: {summary}\n"
              f"Build: {final_status}, rubric score {score:.1f}%, {len(stages)} stages ({len(ai)} on Google AI models), "
-             f"{len(deliverables)} demo deliverable(s). Models were resolved in {mode} mode.")
+             f"{len(deliverables)} demo deliverable(s). Models were resolved in {mode} mode.\n"
+             "Point to make: every service and model in this design cites an official Google doc, read through the "
+             "Developer Knowledge MCP server, and each AI stage runs on the newest model verified in this project.")
     s = _new_slide(prs, f"{customer}: solution overview",
                    f"{mode} mode · grounded in official Google docs via the Developer Knowledge MCP server", notes)
     _card(s, LEFT, BODY_TOP, Inches(7.3), Inches(5.6), [
@@ -203,44 +219,120 @@ def _overview(prs, customer: str, ask: str, summary: str, mode: str, final_statu
     _card(s, Inches(8.3), BODY_TOP, Inches(4.28), Inches(5.6), facts, WHITE, BORDER)
 
 
-def _architecture(prs, customer: str, stages: List[dict]) -> None:
-    notes = "\n".join(f"{st.get('stage')}: {st.get('service')} ({st.get('api')})"
-                      + (f", model {st['model']} [{st['tier']} tier]" if st.get("model") else "")
-                      + f". {st.get('description', '')}" + (f" Source: {st['doc_url']}" if st.get("doc_url") else "")
-                      for st in stages)
+def _stage_note(i: int, st: dict) -> str:
+    feats = [f["name"] for f in st.get("features", []) if isinstance(f, dict) and f.get("name")]
+    note = f"{i}. {st.get('stage')}: {st.get('service')} ({st.get('api')}). {st.get('description', '')}"
+    if st.get("model"):
+        note += f" Runs on {st['model']} ({st.get('tier')} tier), the newest model verified in this project."
+    if feats:
+        note += f" Showcases: {', '.join(feats[:3])}."
+    if st.get("doc_url"):
+        note += f" Source: {st['doc_url']}"
+    return note
+
+
+def _architecture(prs, customer: str, stages: List[dict], mode: str, story: Optional[dict]) -> None:
+    """The reference architecture as an editable flow diagram: one shape per stage in execution order (left to
+    right, then the next row right to left so the arrows stay short), coloured by capability tier, with a legend.
+    The notes give one point per stage and the points to make about the design as a whole."""
+    ai = [st for st in stages if st.get("model")]
+    plain = [st for st in stages if not st.get("model")]
+    notes = "\n".join([f"Walk the flow in stage order: {len(stages)} stages, {len(ai)} on Google AI models."]
+                      + [_stage_note(i, st) for i, st in enumerate(stages, 1)]
+                      + ["", "Points to make:",
+                         "- Every service, model and feature on this slide cites an official Google doc, read through "
+                         "the Developer Knowledge MCP server; nothing here is guessed.",
+                         f"- Each AI stage runs on the newest model verified callable in this project ({mode} mode). "
+                         "The IDs live in usecase_config.json and are re-verified every 24 hours, so the design "
+                         "picks up newer models on its own.",
+                         (f"- {len(plain)} stage(s) are standard Google Cloud services with no model: "
+                          + ", ".join(f"{st.get('service')}" for st in plain) + ".") if plain else
+                         "- Every stage runs on a Google AI model.",
+                         "- Every shape is editable: move, recolour or annotate it for the customer."])
     s = _new_slide(prs, f"Reference architecture: {customer}",
                    "Stages in execution order · colour = capability tier · every shape is editable", notes)
-    n = max(1, len(stages))
-    gap = Inches(0.22) if n > 4 else Inches(0.3)
-    arrow_w, arrow_h = (Inches(0.18), Inches(0.22)) if n > 4 else (Inches(0.24), Inches(0.26))
-    card_w = Emu(int((CONTENT_W - gap * (n - 1)) / n))
-    top, height = Inches(1.45), Inches(5.3)
-    size = 9.0 if n > 4 else 9.5
+    n = len(stages)
+    if not n:
+        _textbox(s, LEFT, Inches(1.8), CONTENT_W, Inches(1.0), [Line("The design lists no stages.", 13, MUTED)])
+        return
+    per_row = n if n <= MAX_PER_ROW else (n + 1) // 2
+    rows = (n + per_row - 1) // per_row
+    hero = _cut((story or {}).get("hero", ""), 40) if story else ""
+    pill_w, gap = Inches(1.15), Inches(0.3)
+    arrow_w, arrow_h = Inches(0.22), Inches(0.26)
+    area_left, area_w = LEFT + pill_w + gap, CONTENT_W - 2 * (pill_w + gap)
+    card_w = Emu(int((area_w - gap * (per_row - 1)) / per_row))
+    top, row_gap = Inches(1.45), Inches(0.5)
+    card_h = Inches(4.9) if rows == 1 else Emu(int((Inches(5.25) - row_gap * (rows - 1)) / rows))
+    size = 9.5 if per_row <= 3 else 8.5
+    desc_chars = 300 if rows == 1 else 130
+    positions = []  # (left, top) of each stage card
     for i, st in enumerate(stages):
-        left = LEFT + i * (card_w + gap)
+        r, c = divmod(i, per_row)
+        col = c if r % 2 == 0 else per_row - 1 - c  # snake: odd rows run right to left
+        left, y = area_left + col * (card_w + gap), top + r * (card_h + row_gap)
+        positions.append((left, y))
         fill, border = tier_colors(st.get("tier", ""))
         feats = [f["name"] for f in st.get("features", []) if isinstance(f, dict)]
-        lines = [Line(_cut(st.get("stage"), 60), size + 2.5, DARK_BLUE, True),
-                 Line(_cut(st.get("service"), 60), size + 1, HEADER, True), Line(""),
-                 Line(f"Model: {st['model']}" if st.get("model") else "No AI model", size + 0.5,
+        lines = [Line(_cut(st.get("stage"), 60), size + 2, DARK_BLUE, True),
+                 Line(_cut(st.get("service"), 60), size + 0.5, HEADER, True),
+                 Line(f"Model: {st['model']}" if st.get("model") else "No AI model", size,
                       border if st.get("model") else MUTED, bool(st.get("model"))),
-                 Line(f"API: {_cut(st.get('api'), 70)}", size - 0.5, BLUE), Line(""),
-                 Line(_cut(st.get("description"), 320), size, BODY)]
+                 Line(f"API: {_cut(st.get('api'), 60)}", size - 1, BLUE), Line(""),
+                 Line(_cut(st.get("description"), desc_chars), size - 0.5, BODY)]
         if feats:
-            lines += [Line(""), Line("Showcases: " + ", ".join(feats[:2]), size - 0.5, GREEN, True)]
-        if st.get("doc_title"):
-            lines += [Line(""), Line(f"Doc: {_cut(st['doc_title'], 45)}", size - 1, MUTED, False, st.get("doc_url", ""))]
-        _card(s, left, top, card_w, height, lines, fill, border)
-        if i < n - 1:
-            _shape(s, MSO_SHAPE.RIGHT_ARROW, left + card_w + (gap - arrow_w) // 2, top + (height - arrow_h) // 2,
-                   arrow_w, arrow_h, BLUE)
+            lines += [Line("Showcases: " + ", ".join(feats[:2]), size - 1, GREEN, True)]
+        if st.get("doc_title") and rows == 1:
+            lines += [Line(f"Doc: {_cut(st['doc_title'], 45)}", size - 1.5, MUTED, False, st.get("doc_url", ""))]
+        _card(s, left, y, card_w, card_h, lines, fill, border)
+    for i in range(n - 1):  # arrows between consecutive stages
+        (l1, y1), (l2, y2) = positions[i], positions[i + 1]
+        if y1 == y2:
+            x = min(l1, l2) + card_w + (gap - arrow_w) // 2
+            _shape(s, MSO_SHAPE.RIGHT_ARROW if l2 > l1 else MSO_SHAPE.LEFT_ARROW, x,
+                   y1 + (card_h - arrow_h) // 2, arrow_w, arrow_h, BLUE)
+        else:
+            _shape(s, MSO_SHAPE.DOWN_ARROW, l1 + (card_w - arrow_h) // 2, y1 + card_h + (row_gap - arrow_w) // 2,
+                   arrow_h, arrow_w, BLUE)
+    first_y, (last_l, last_y) = positions[0][1], positions[-1]
+    pill_h = Inches(1.75)  # room for a 40-character hero / 60-character outcome at this width
+    _card(s, LEFT, first_y + (card_h - pill_h) // 2, pill_w, pill_h,
+          [Line("Who", 9, MUTED, True), Line(hero or "The user", 9.5, HEADER, True)], GREY_FILL, BORDER, 0.3)
+    _shape(s, MSO_SHAPE.RIGHT_ARROW, LEFT + pill_w + (gap - arrow_w) // 2, first_y + (card_h - arrow_h) // 2,
+           arrow_w, arrow_h, BLUE)
+    outcome = _cut((story or {}).get("payoff", ""), 60) if story else ""
+    forward = rows % 2 == 1  # the last row runs left to right: the outcome follows the last card on its right
+    end_left = last_l + card_w + gap if forward else last_l - gap - pill_w
+    _card(s, end_left, last_y + (card_h - pill_h) // 2, pill_w, pill_h,
+          [Line("Outcome", 9, MUTED, True), Line(outcome or "Result delivered", 9.5, GREEN, True)],
+          LIGHT_GREEN, GREEN, 0.3)
+    _shape(s, MSO_SHAPE.RIGHT_ARROW if forward else MSO_SHAPE.LEFT_ARROW,
+           (last_l + card_w if forward else last_l - gap) + (gap - arrow_w) // 2,
+           last_y + (card_h - arrow_h) // 2, arrow_w, arrow_h, BLUE)
+    # legend: the tiers in use
+    tiers = list(dict.fromkeys(st.get("tier") for st in stages if st.get("model")))
+    x, y = LEFT, Inches(6.95)
+    for tier in tiers + ([""] if plain else []):
+        fill, border = tier_colors(tier)
+        label = TIER_LABELS.get(tier, tier) if tier else "No AI model (Google Cloud service)"
+        box = s.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, x, y + Inches(0.05), Inches(0.22), Inches(0.22))
+        box.fill.solid()
+        box.fill.fore_color.rgb = fill if tier else GREY_FILL
+        box.line.color.rgb = border if tier else BORDER
+        box.shadow.inherit = False
+        w = Inches(0.3 + 0.085 * len(label))
+        _textbox(s, x + Inches(0.26), y - Inches(0.02), w, Inches(0.35), [Line(label, 9, BODY)])
+        x += Inches(0.3) + w
 
 
 def _deliverables(prs, customer: str, deliverables: List[dict]) -> None:
-    notes = "\n".join(f"{d['title']} ({d['kind']}): {d['brief']} Variants: "
+    notes = "\n".join(f"{d['title']} ({manifest.kind_label(d['kind'])}): {d['brief']} Variants: "
                       + ", ".join(v["label"] for v in d["variants"])
-                      + (f". Model: {d['model']}." if d.get("model") else ". No verified model in this project.")
+                      + (f". Generated by {d['model']}." if d.get("model") else ". No verified model in this project.")
                       for d in deliverables) or "The design lists no demo deliverables."
+    notes += ("\n\nPoints to make: every output was planned from the ask, scripted by the media director and checked "
+              "by a Gemini model (language, script, lip-sync and look for clips; schema, brief and safety for data "
+              "and agent runs). Open the studio's demo output section to play them in story order.")
     s = _new_slide(prs, f"Demo deliverables: {customer}",
                    "What the demo lets a viewer see or hear · generated by the newest verified model of each tier", notes)
     if not deliverables:
@@ -252,49 +344,56 @@ def _deliverables(prs, customer: str, deliverables: List[dict]) -> None:
     _table(s, ["Deliverable", "Kind", "Model", "Variants", "Brief"], rows, [2.4, 0.9, 2.3, 2.6, 3.6])
 
 
-def _evaluation(prs, customer: str, rubric: List[dict], attempts: List[dict]) -> None:
+def _proof(prs, customer: str, rubric: List[dict], attempts: List[dict], whats_new: List[dict], score: float,
+           final_status: str) -> None:
+    """Scorecard and what's new on one slide: the rubric rows with their verdicts and reasons, the attempts, and
+    the documented features of the chosen models."""
     passed = sum(1 for m in rubric if m.get("pass"))
-    notes = (f"{passed} of {len(rubric)} rubric checks passed. LLM-judge rows score the design and code 1-5; "
-             "programmatic rows are computed by the studio.\n"
-             + "\n".join(f"Attempt {a['attempt']}: {a['score_pct']}% {a['status']} in {a['seconds']} s"
-                         + (f"; fix fed forward: {a['patch_applied']}" if a.get("patch_applied") not in ("", "-") else "")
-                         for a in attempts))
-    s = _new_slide(prs, "Evaluation rubric", f"LLM judge and programmatic checks for {customer} · "
-                                             f"{passed}/{len(rubric)} passed", notes)
-    rows = [[Cell(m.get("metric", "")), Cell(str(m.get("value", ""))), Cell(m.get("threshold", "")),
-             Cell(m.get("method", "")),
+    ranked = sorted(whats_new, key=lambda f: (not f.get("showcased"), not f.get("new")))[:4]
+    notes = (f"Result: {final_status}, rubric score {score:.1f}%, {passed} of {len(rubric)} checks passed over "
+             f"{len(attempts)} attempt(s). BEST EFFORT means the best attempt missed at least one threshold; the "
+             "Why column says which. Judge rows are scored 1-5 by a Gemini model; the others are computed by the "
+             "studio.\n"
+             + "\n".join(f"- {m.get('metric')}: {m.get('value')} ({'pass' if m.get('pass') else 'fail'}; "
+                         f"threshold {m.get('threshold')}). {m.get('notes', '')}" for m in rubric)
+             + "\n" + "\n".join(f"Attempt {a['attempt']}: {a['score_pct']}% {a['status']} in {a['seconds']} s"
+                                + (f"; fix fed forward: {a['patch_applied']}"
+                                   if a.get("patch_applied") not in ("", "-", None) else "") for a in attempts)
+             + ("\nWhat's new in the chosen models (from each model's official page):\n"
+                + "\n".join(f"- {f.get('model')}: {f.get('name')}: {f.get('what')} Quote: \"{f.get('quote', '')}\" "
+                            f"({f.get('doc_url', '')})" for f in ranked) if ranked else
+                "\nNo documented new features were found for the models in this design."))
+    s = _new_slide(prs, f"Proof: scorecard for {customer}",
+                   f"{final_status} · rubric score {score:.1f}% · {passed}/{len(rubric)} checks passed over "
+                   f"{len(attempts)} attempt(s) · what's new in the chosen models", notes)
+    rows = [[Cell(m.get("metric", "")), Cell(str(m.get("value", ""))),
              Cell("PASS" if m.get("pass") else "FAIL", color=GREEN if m.get("pass") else FAIL_RED, bold=True),
-             Cell(_cut(m.get("notes", ""), 160))] for m in rubric[:MAX_RUBRIC_ROWS]]
-    _table(s, ["Criterion", "Result", "Threshold", "Method", "Status", "Notes"], rows,
-           [2.3, 0.9, 2.0, 1.2, 0.8, 4.6], size=9)
-    if attempts:
-        line = "   ·   ".join(f"#{a['attempt']}: {a['score_pct']}% {a['status']} ({a['seconds']} s)" for a in attempts)
-        _textbox(s, LEFT, Inches(6.75), CONTENT_W, Inches(0.45), [Line("Attempts: " + line, 9.5, MUTED)])
-
-
-def _whats_new(prs, whats_new: List[dict]) -> None:
-    ranked = sorted(whats_new, key=lambda f: (not f.get("showcased"), not f.get("new")))[:MAX_FEATURE_ROWS]
-    notes = "\n".join(f"{f.get('model')}: {f.get('name')}: {f.get('what')} Quote: \"{f.get('quote', '')}\" "
-                      f"({f.get('doc_url', '')})" for f in ranked) or "No documented features were found."
-    s = _new_slide(prs, "What's new in the chosen models",
-                   "Features read from each model's official page via the Developer Knowledge MCP server", notes)
+             Cell(_cut(m.get("notes", ""), 120))] for m in rubric[:MAX_RUBRIC_ROWS]]
+    if rows:
+        _table(s, ["Check", "Result", "Status", "Why"], rows, [2.2, 1.0, 0.7, 4.5], size=8.5)
+    else:
+        _textbox(s, LEFT, Inches(1.8), Inches(8.4), Inches(1.0), [Line("No rubric rows were recorded.", 13, MUTED)])
+    lines = [Line("What's new in the chosen models", 12, HEADER, True), Line("")]
+    for f in ranked:
+        tag = f" · showcased in {f.get('stage') or 'this design'}" if f.get("showcased") else ""
+        lines += [Line(f"{f.get('model')}: {f.get('name')}{' (new)' if f.get('new') else ''}{tag}", 10, DARK_BLUE, True),
+                  Line(_cut(f.get("what", ""), 150), 9.5, BODY, False, f.get("doc_url", "")), Line("")]
     if not ranked:
-        _textbox(s, LEFT, Inches(1.8), CONTENT_W, Inches(1.0),
-                 [Line("No documented features were found for the models in this design.", 13, MUTED)])
-        return
-    rows = [[Cell(f.get("model", "")), Cell(f.get("name", "") + (" (new)" if f.get("new") else "")),
-             Cell(_cut(f.get("what", ""), 140)),
-             Cell((f.get("stage") or "yes") if f.get("showcased") else "available",
-                  color=GREEN if f.get("showcased") else None),
-             Cell(f.get("doc_title") or "doc", f.get("doc_url", ""))] for f in ranked]
-    _table(s, ["Model", "Feature", "What it does", "Showcased in", "Source"], rows, [2.2, 2.1, 4.1, 1.8, 1.6])
+        lines.append(Line("No documented new features were found for these models.", 10, MUTED))
+    if attempts:
+        lines += [Line("Attempts", 12, HEADER, True)] + [
+            Line(f"#{a['attempt']}: {a['score_pct']}% {a['status']} ({a['seconds']} s)", 9.5, BODY) for a in attempts]
+    _card(s, Inches(9.35), BODY_TOP, Inches(3.23), Inches(5.6), lines, WHITE, BORDER)
 
 
 def _package(prs, files: List[str], mode: str) -> None:
     notes = ("The package runs on its own: python pipeline.py --dry-run lists every stage and its resolved model. "
              "Model IDs live only in usecase_config.json and can be overridden with MODEL_<TIER> environment "
-             "variables; re-running the studio picks up newer verified models.")
-    s = _new_slide(prs, "Package and upkeep", "What ships, and how it stays current", notes)
+             "variables; re-running the studio picks up newer verified models.\n"
+             "Next steps for the customer: unzip the package, set GOOGLE_CLOUD_PROJECT, run the dry run, then run "
+             "pipeline.py with a real input in their own project. The studio never executes this code itself; "
+             "every requirement links to the official doc that documents it, and the package passed the PII scan.")
+    s = _new_slide(prs, "Package and next steps", "What ships, how it stays current, how to run it", notes)
     _card(s, LEFT, BODY_TOP, Inches(5.8), Inches(5.4), [Line("Files in the codebase package", 13, DARK_BLUE, True),
                                                         Line("")] + [Line(f"• {f}", 11, BODY) for f in files[:14]],
           LIGHT_BLUE, BLUE)
@@ -305,6 +404,10 @@ def _package(prs, files: List[str], mode: str) -> None:
         Line("• Model IDs live only in usecase_config.json; set MODEL_<TIER> to override one.", 11, BODY),
         Line("• Re-run the studio to pick up newer verified models and features.", 11, BODY),
         Line("• Every package in requirements.txt links to the official doc that documents it.", 11, BODY),
+        Line(""), Line("Next steps", 13, HEADER, True), Line(""),
+        Line("1. Unzip the package and set GOOGLE_CLOUD_PROJECT.", 11, BODY),
+        Line("2. python pipeline.py --dry-run: every stage with its resolved model, no API calls.", 11, BODY),
+        Line("3. python pipeline.py \"<input>\" in your own project; the studio never runs this code itself.", 11, BODY),
     ], WHITE, BORDER)
 
 
@@ -312,21 +415,33 @@ def build_usecase_deck(output_path: str, *, customer: str, ask: str, summary: st
                        rubric: List[dict], attempts: List[dict], files: List[str], whats_new: List[dict], mode: str,
                        deliverables: List[dict], score: float, final_status: str,
                        story: Optional[dict] = None) -> str:
-    """Write the editable deck for one build to `output_path` (six slides, plus the opening story slide when the
-    build has a story). -> output_path."""
+    """Write the editable five-slide deck for one build to `output_path` (the story opens it when the build has
+    one, else the solution overview). -> output_path."""
     prs = pptx.Presentation()
     prs.slide_width, prs.slide_height = SLIDE_W, SLIDE_H
     props = prs.core_properties
     props.title, props.subject = f"{customer}: architecture deck", _cut(ask, 250)
     props.author = props.last_modified_by = "Gemini + MCP Use-Case Studio"
+    props.version = DECK_VERSION
     if story and story.get("beats"):
-        _story(prs, customer, story, deliverables)
-    _overview(prs, customer, ask, summary, mode, final_status, score, stages, deliverables)
-    _architecture(prs, customer, stages)
+        _story(prs, customer, story, deliverables, ask, summary)
+    else:
+        _overview(prs, customer, ask, summary, mode, final_status, score, stages, deliverables)
+    _architecture(prs, customer, stages, mode, story if story and story.get("beats") else None)
     _deliverables(prs, customer, deliverables)
-    _evaluation(prs, customer, rubric, attempts)
-    _whats_new(prs, whats_new)
+    _proof(prs, customer, rubric, attempts, whats_new, score, final_status)
     _package(prs, files, mode)
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     prs.save(output_path)
     return output_path
+
+
+def deck_version(path: str) -> str:
+    """The DECK_VERSION a saved deck was built with: '' when the file is missing, not a readable deck, or was made
+    before decks carried a version (all of which mean: regenerate it)."""
+    if not os.path.isfile(path):
+        return ""
+    try:
+        return str(pptx.Presentation(path).core_properties.version or "")
+    except Exception:  # a truncated or foreign file: treat as stale, not as an error
+        return ""

@@ -15,8 +15,8 @@ import sys
 import threading
 from typing import List, Optional
 
-from engine import project_sync
-from engine.config import ROOT, Settings
+from engine import prebuild, project_sync, regression
+from engine.config import ROOT, Settings, get_settings
 from engine.model_resolver import ModelResolver
 
 logger = logging.getLogger("studio.serve")
@@ -36,6 +36,19 @@ def warm_up(settings: Optional[Settings] = None) -> None:
         logger.exception("model warm-up failed; the app resolves the models on first use")
 
 
+def keep_samples_built(settings: Optional[Settings] = None) -> None:
+    """Sample demos (engine/prebuild.py): build the ones still missing after the bucket restore, and rebuild the
+    ones a model promotion makes stale (regression hook first, so a rollback comes before the rebuild). Never
+    raises (daemon thread)."""
+    try:
+        s = settings or get_settings()
+        regression.install(s)
+        prebuild.install(s)
+        prebuild.start_background(s)
+    except Exception:  # thread boundary
+        logger.exception("sample pre-build could not start; the app starts it on first use")
+
+
 def streamlit_argv() -> List[str]:
     """`streamlit run app.py` on $PORT (Cloud Run sets it; default 8080)."""
     port = os.environ.get("PORT", "").strip()
@@ -47,6 +60,7 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     threading.Thread(target=warm_up, name="model-warmup", daemon=True).start()
     project_sync.start()  # restore saved projects from the bucket, then back them up every minute
+    threading.Thread(target=keep_samples_built, name="prebuild-boot", daemon=True).start()
     from streamlit.web import cli as streamlit_cli  # here, so importing this module (tests) stays light
     sys.argv = streamlit_argv()
     sys.exit(streamlit_cli.main())

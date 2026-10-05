@@ -8,9 +8,11 @@ fallback models). Images come first, so a video can start from an image (one ava
 Clip checker: when settings.media_qa is on, a reasoning-tier model watches or listens to every generated file and
 reads every generated text (engine/media_qa.py). A failed check regenerates the asset with the findings as a hint,
 then checks again; the best-scoring result is kept, so the UI can warn. A checker outage never fails an asset.
-A chat deliverable has no file: its setup (the director's system instruction and the first user message) is
-checked, and a failed check only marks its badge. It is not regenerated, because its prompt comes from the
-media director, not from a generation call. When a deliverable plays a story scene, a soft "plays_scene" check
+A chat deliverable's file is the assistant's first reply: the first turn (the director's system instruction with
+its Context section, the first user message) is played at build time, the transcript is checked, and a failed
+check plays it again with the findings, like any other output. redirect() has the director write the setup of a
+project's chats again and replays them (used for chats directed before the assistant got its context). When a
+deliverable plays a story scene, a soft "plays_scene" check
 reports outputs that drift off the scene without failing them. quality_summary() / quality_row() roll the
 verdicts up into one scorecard row.
 
@@ -280,7 +282,7 @@ def _carry_over(state: dict, previous: dict, project_dir: str) -> int:
             if a["status"] != "pending" or not old or old.get("status") != "ready" or \
                     not a["spec_hash"] or old.get("spec_hash") != a["spec_hash"]:
                 continue
-            ok = bool(old.get("prompt")) if d["kind"] == "chat" else bool(asset_path(project_dir, old))
+            ok = bool(old.get("prompt")) and bool(asset_path(project_dir, old))  # a chat's file: its first reply
             if ok and d["kind"] == "video" and d.get("start_from"):
                 src = by_id.get(d["start_from"])
                 ok = bool(src and src["assets"]) and (src["id"], src["assets"][0]["label"]) in carried
@@ -374,15 +376,15 @@ def cancel(project_dir: str, reason: str) -> None:
 
 
 def can_regenerate(kind: str) -> bool:
-    """True for kinds whose ready asset can be generated again: media clips, texts and data outputs (a chat has
-    no generated file: its setup is the media director's)."""
+    """True for kinds whose ready asset can be generated again: media clips, texts, data outputs and chats (a
+    chat's generated file is the assistant's first reply; its setup stays the media director's)."""
     return kind in manifest.REGENERABLE_KINDS
 
 
 def regenerate(settings: Settings, project_dir: str, deliverable_id: str, label: str) -> bool:
-    """Generate one finished clip, text or data output again (for example one the checker flagged). Its prompt
-    and script are kept, the old file is replaced when the new one is ready. -> True if started (False while a
-    job runs, if not found, or for a chat)."""
+    """Generate one finished clip, text, data output or chat reply again (for example one the checker flagged).
+    Its prompt and script are kept, the old file is replaced when the new one is ready. -> True if started (False
+    while a job runs or if not found)."""
     if is_running(project_dir):
         return False
     path = status_path(project_dir)
@@ -400,6 +402,47 @@ def regenerate(settings: Settings, project_dir: str, deliverable_id: str, label:
     start(settings, build_id=state["build_id"], project_dir=project_dir, customer=state["customer"],
           ask=state["ask"], summary=state["summary"], deliverables=[])
     return True
+
+
+def redirect(settings: Settings, project_dir: str, kinds: Tuple[str, ...] = ("chat",)) -> int:
+    """Have the media director write the prompt and script of this project's ready assets of these kinds again,
+    then generate and check them anew (for example chats directed before the assistant got its context). The old
+    files are replaced when the new ones are ready. -> the number of assets queued (0 while a job runs, when
+    there is no status, or when nothing is ready to redo)."""
+    if is_running(project_dir):
+        return 0
+    path = status_path(project_dir)
+    with file_lock(path):
+        state = load_status(project_dir)
+        if not state:
+            return 0
+        n = 0
+        for d in state["deliverables"]:
+            if d.get("kind") not in kinds:
+                continue
+            for a in d["assets"]:
+                if a.get("status") == "ready":
+                    a.update(status="pending", prompt="", script="", error="", note="", qa={}, carried_over=False)
+                    n += 1
+        if not n:
+            return 0
+        state.update(state="queued", error="", updated_at=iso())
+        write_json(path, state)
+    start(settings, build_id=state["build_id"], project_dir=project_dir, customer=state["customer"],
+          ask=state["ask"], summary=state["summary"], deliverables=[])
+    return n
+
+
+def chat_reply(project_dir: str, asset: dict) -> str:
+    """A chat asset's first reply ('' until the first turn has been played)."""
+    path = asset_path(project_dir, asset) if asset.get("status") == "ready" else ""
+    if not path:
+        return ""
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
 
 
 def _hero(story) -> str:
@@ -527,41 +570,16 @@ class _Job:
 
     def _generate(self) -> None:
         state = self._update(lambda s: None)
-        catalog = self.resolver.catalog()
-        chats, first, rest = [], [], []
+        first, rest = [], []
         for d in state["deliverables"]:
             for a in d["assets"]:
-                if a["status"] != "pending" or not a["prompt"]:
-                    continue
-                if d["kind"] == "chat":
-                    chats.append((d["id"], a["label"], (catalog.get(d["tier"]) or {}).get("model", "")))
-                else:
+                if a["status"] == "pending" and a["prompt"]:
                     (first if d["kind"] == "image" else rest).append((d["id"], a["label"]))
-        # A chat is ready once directed (it talks to the live model in the UI); with the checker on, its setup is
-        # checked first (a few seconds) and a failed check only marks the badge.
-        check_chats = bool(self.s.media_qa) and media_qa.checkable("chat")
-        for did, label, model in chats:
-            self._set_asset(did, label, status="checking" if check_chats else "ready", model=model, qa={})
+        # A chat is generated like the rest: its first turn is played (the assistant's reply is its file) and the
+        # transcript is checked, so the badge says whether the assistant answers from its context.
         with ThreadPoolExecutor(max(1, self.s.media_parallel)) as ex:
-            chat_checks = [ex.submit(self._check_chat, (did, label)) for did, label, _ in chats] if check_chats else []
             list(ex.map(self._make, first))  # images first: videos may start from them
             list(ex.map(self._make, rest))
-            for f in chat_checks:
-                f.result()  # re-raises _Superseded
-
-    def _check_chat(self, job: Tuple[str, str]) -> None:
-        """Check a chat's setup (system instruction + first user message). Never regenerates: the prompt is the
-        media director's, so a failed check only marks the badge."""
-        if self.stop.is_set():
-            return
-        did, label = job
-        state = self._update(lambda s: None)
-        d = next(x for x in state["deliverables"] if x["id"] == did)
-        a = next(x for x in d["assets"] if x["label"] == label)
-        variant = {k: a.get(k, "") for k in ("label", "language", "script", "prompt")}
-        qa = self._check(self._qa_deliverable(state, d), a, b"", "", None, text=media_qa.chat_text(variant),
-                         model=str(a.get("model") or ""))
-        self._set_asset(did, label, status="ready", qa=qa)
 
     @staticmethod
     def _qa_deliverable(state: dict, d: dict) -> dict:
@@ -595,7 +613,7 @@ class _Job:
         self._discard(a.get("file", ""), name)
         if not check:
             return
-        qa = self._check(dq, a, data, mime, first_frame, model=model)
+        qa = self._check(dq, a, data, mime, first_frame, model=model, text=self._transcript(d, a, data))
         best = {"file": name, "model": model, "mime": mime, "qa": qa}  # the best-scoring clip checked so far
         first_summary, tried = qa["summary"], 0
         rounds = max(0, int(self.s.media_retries))
@@ -610,7 +628,7 @@ class _Job:
                 break
             name2 = self._save(did, label, data2, mime2, status="checking", model=model2,
                                seconds=round(time.monotonic() - t0, 1), note=note)
-            qa2 = self._check(dq, a, data2, mime2, first_frame, model=model2)
+            qa2 = self._check(dq, a, data2, mime2, first_frame, model=model2, text=self._transcript(d, a, data2))
             if qa2["verdict"] != "fail" or qa2.get("score", 0) >= best["qa"].get("score", 0):
                 self._discard(best["file"], name2)
                 best = {"file": name2, "model": model2, "mime": mime2, "qa": qa2}
@@ -666,11 +684,25 @@ class _Job:
         except Exception:  # telemetry boundary: log it, keep the asset
             logger.warning("could not record the output check of %s", model, exc_info=True)
 
+    @staticmethod
+    def _transcript(d: dict, a: dict, data: bytes) -> str:
+        """What the checker reads for a chat: setup plus the played first reply ('' for the other kinds)."""
+        if d["kind"] != "chat":
+            return ""
+        variant = {k: a.get(k, "") for k in ("label", "language", "script", "prompt")}
+        return media_qa.chat_text(dict(variant, reply=data.decode("utf-8", errors="replace")))
+
     def _call(self, d: dict, a: dict, model: str, location: str, hint: str,
               first_frame: Optional[media.Media]) -> media.Media:
         retry_note = f"\n(The previous attempt failed: {hint}. Keep it brand-safe.)" if hint else ""
         prompt = a["prompt"] + retry_note
         kind = d["kind"]
+        if kind == "chat":  # play the first turn: the reply is the asset
+            system = a["prompt"] + (f"\n\nA reviewer rejected your previous reply: {hint}. Answer again, fully, "
+                                    "from the Context above." if hint else "")
+            opener = a["script"] or "Hello"
+            reply = media.chat(self.s, model, location, system, [{"role": "user", "text": opener}])
+            return reply.strip().encode("utf-8"), "text/markdown"
         if kind == "image":
             return media.image(self.s, model, location, prompt)
         if kind == "video":

@@ -10,6 +10,8 @@ Versions form a tree: each snapshot's parent is the version the folder was at (t
 nearest ancestor whose sources differ, so repeated undos step back one edit at a time.
 Files under deliverables/ are generated in the background after a build; they are stored in every snapshot (undo
 brings the clips back without regenerating them) but they never count as unsaved changes or as an undo step.
+The architecture deck is derived from the stored result (and redrawn when the slide layout changes): it is stored
+and restored like any file, but a deck that differs is not an unsaved change or an undo step either.
 .versions, __pycache__, lock files and in-progress temp files are never snapshotted, restored or deleted.
 Every read-modify-write of the index holds common.file_lock, so the app and background threads can share a project.
 """
@@ -27,6 +29,7 @@ INDEX = "index.json"
 OBJECTS = "objects"
 MAX_VERSIONS = 30
 VOLATILE_PREFIXES = ("deliverables/",)  # background-generated media: stored, but never an edit
+DERIVED_SUFFIXES = ("_architecture_deck.pptx",)  # drawn from the result (build_editor.refresh_deck): never an edit
 SKIP_DIRS = frozenset({VERSIONS_DIR, "__pycache__"})
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 CHUNK = 1 << 20
@@ -161,7 +164,9 @@ def _tree(root: str, idx: dict, store: bool) -> Dict[str, str]:
 
 
 def _sources(files: Dict[str, str]) -> Dict[str, str]:
-    return {r: s for r, s in files.items() if not r.startswith(VOLATILE_PREFIXES)}
+    """The files whose change is an edit: everything but the volatile deliverables and the derived deck."""
+    return {r: s for r, s in files.items()
+            if not r.startswith(VOLATILE_PREFIXES) and not r.endswith(DERIVED_SUFFIXES)}
 
 
 def _gc(root: str, idx: dict) -> None:

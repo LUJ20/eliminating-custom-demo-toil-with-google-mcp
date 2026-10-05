@@ -3,8 +3,9 @@ it can observe, against the deliverable (kind, title, brief, story scene) and th
 
 Checks depend on the kind: language spoken, script followed, lip-sync, same person as the start image,
 brand safety, legible on-screen text, and whether the asset matches its prompt. Written outputs are checked too:
-a "text" deliverable's generated text, and a "chat" deliverable's setup (the system instruction the media director
-wrote plus the first user message) are sent as a text part, never as inline media. When the deliverable plays a
+a "text" deliverable's generated text, and a "chat" deliverable's transcript (the system instruction the media
+director wrote, the first user message and the assistant's first reply) are sent as a text part, never as inline
+media. When the deliverable plays a
 story scene, a soft "plays_scene" check judges whether the asset fits it. The answer is JSON, validated strictly
 (a bad answer raises OutputError so the Troubleshooter re-prompts). The verdict is "pass" when every critical
 check passes. No model ID is named here: the caller picks the model through the resolver.
@@ -71,13 +72,18 @@ PROGRAMMATIC = frozenset({"schema_valid"})  # decided by code before the reviewe
 
 # (kind, name) -> a kind-specific wording of a check; the name (and so its criticality) stays the same.
 KIND_CHECKS: Dict[Tuple[str, str], str] = {
-    ("chat", "written_language"): "The system instruction makes the assistant reply in {language}, and the first "
-                                  "user message is written in {language}.",
+    ("chat", "written_language"): "The system instruction makes the assistant reply in {language}, the first "
+                                  "user message is written in {language}, and so is the assistant's first reply.",
     ("chat", "matches_brief"): "The system instruction fits the brief: it defines the assistant's persona, its "
-                               "scope (what it helps with and what it declines), its tone, and when it hands off "
-                               "to a human; the first user message is a realistic opener for that assistant.",
-    ("chat", "plays_scene"): "The assistant's setup and the first user message fit the story scene given in the "
-                             "JSON (\"scene\"; \"hero\" is the story's main character when given).",
+                               "scope (what it helps with and what it declines), its tone, when it hands off "
+                               "to a human, and a Context section with the facts and data the assistant needs; "
+                               "the first user message is a realistic opener for that assistant; the assistant's "
+                               "first reply answers it from that context: it asks the user for no data, file or "
+                               "detail the context already holds, does not say it cannot help with something the "
+                               "context covers, and shows a requested chart or trend as a fenced chart block "
+                               "(CSV) with the finding, never a claim that it cannot draw.",
+    ("chat", "plays_scene"): "The assistant's setup, the first user message and the first reply fit the story "
+                             "scene given in the JSON (\"scene\"; \"hero\" is the story's main character when given).",
     ("image", "plays_scene"): "The image fits the story scene given in the JSON (\"scene\"; \"hero\" is the "
                               "story's main character when given): its setting and the character(s) shown.",
     ("structured", "matches_brief"): "The data is what the brief and the generation prompt ask the system to "
@@ -106,12 +112,15 @@ def checkable(kind: str) -> bool:
 
 
 def chat_text(variant: dict) -> str:
-    """What a chat deliverable is checked on: its system instruction and its first user message."""
+    """What a chat deliverable is checked on: its system instruction, its first user message and the assistant's
+    first reply (`reply`, when the first turn has been played)."""
     prompt = str(variant.get("prompt") or "").strip()
     if not prompt:
         return ""
     script = str(variant.get("script") or "").strip()
-    return f"SYSTEM INSTRUCTION:\n{prompt}\n\nFIRST USER MESSAGE:\n{script or '(none)'}"
+    text = f"SYSTEM INSTRUCTION:\n{prompt}\n\nFIRST USER MESSAGE:\n{script or '(none)'}"
+    reply = str(variant.get("reply") or "").strip()
+    return f"{text}\n\nASSISTANT'S FIRST REPLY:\n{reply}" if reply else text
 
 
 def _readable(kind: str, data: bytes, mime: str) -> bool:
@@ -221,8 +230,8 @@ def build_prompt(deliverable: dict, variant: dict, names: List[str], has_referen
     spec = json.dumps(info, ensure_ascii=False, indent=1)
     lines = "\n".join(f'- "{n}": {_describe(kind, n, f"{label} (BCP-47 {language})")}' for n in names)
     if kind == "chat":
-        media = ("The second part of this message is the setup of a chat assistant to review: its system "
-                 "instruction and the first user message of the demo.")
+        media = ("The second part of this message is a chat assistant to review: its system instruction, the first "
+                 "user message of the demo and, when played, the assistant's first reply.")
     elif kind == "structured":
         media = ("The second part of this message is the data result the system returned in this demo (JSON: a "
                  "table of columns and rows, or one data object) to review.")

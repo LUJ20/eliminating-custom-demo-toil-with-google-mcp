@@ -74,10 +74,10 @@ class ManifestKindsTest(unittest.TestCase):
                                          {"image": CATALOG["image"]}, 16)
         self.assertEqual((out[0]["tier"], out[0]["status"]), ("", "unsupported"))
 
-    def test_only_media_text_and_data_kinds_can_be_regenerated(self):
-        for kind in ("video", "image", "speech", "music", "text", "structured", "agent_trace"):
-            self.assertTrue(dlv.can_regenerate(kind), kind)
-        self.assertFalse(dlv.can_regenerate("chat"))
+    def test_every_generated_kind_can_be_regenerated(self):
+        for kind in ("video", "image", "speech", "music", "text", "structured", "agent_trace", "chat"):
+            self.assertTrue(dlv.can_regenerate(kind), kind)  # a chat: its first reply is played again
+        self.assertFalse(dlv.can_regenerate("nonsense"))
 
 
 class ValidatorTest(unittest.TestCase):
@@ -221,8 +221,11 @@ class JobDataTest(OfflineTestCase):
         return produce
 
     def _patches(self, check, produce=None, generate=None):
+        self.replies = getattr(self, "replies", [])
         patches = [mock.patch.object(brain, "direct_media", side_effect=self._direction),
                    mock.patch.object(media_qa, "check", side_effect=check),
+                   mock.patch.object(dlv.media, "chat", side_effect=lambda s, m, loc, system, history: (
+                       self.replies.append(system) or f"reply-{len(self.replies)}")),
                    mock.patch.object(dlv, "McpKnowledgeClient", return_value=FakeMcp())]
         if produce:
             patches.append(mock.patch.object(dlv._Job, "_produce", produce))
@@ -340,7 +343,7 @@ class JobDataTest(OfflineTestCase):
         job.resolver = object()  # no record_check: nothing to report to
         job._record_check({"tier": "reasoning"}, "gen-model", {"verdict": "pass"})
 
-    def test_text_and_data_outputs_can_be_regenerated_but_a_chat_cannot(self):
+    def test_text_data_and_chat_outputs_can_be_regenerated(self):
         texts = []
 
         def generate(settings, model, prompt, location=None, **kwargs):
@@ -351,14 +354,16 @@ class JobDataTest(OfflineTestCase):
                  {"id": "agent", "title": "Rebooking agent", "kind": "agent_trace", "brief": "The agent rebooks."},
                  {"id": "chat", "title": "Try the concierge", "kind": "chat", "brief": "Ask the concierge."}]
         first = self._run(items, self._passing, generate=generate)
-        old_email, old_agent = self._asset(first, "email"), self._asset(first, "agent")
+        old_email, old_agent, old_chat = self._asset(first, "email"), self._asset(first, "agent"), self._asset(first, "chat")
         self.assertEqual(len(texts), 2)
+        self.assertEqual(dlv.chat_reply(self.project, old_chat), "reply-1")  # the chat's first turn was played
         self.directed.clear()
         patches = self._patches(self._passing, generate=generate)
         for p in patches:
             p.start()
         try:
-            self.assertFalse(dlv.regenerate(self.settings, self.project, "chat", "Main"))
+            self.assertTrue(dlv.regenerate(self.settings, self.project, "chat", "Main"))
+            self._join()
             self.assertTrue(dlv.regenerate(self.settings, self.project, "email", "Main"))
             self._join()
             self.assertTrue(dlv.regenerate(self.settings, self.project, "agent", "Main"))
@@ -367,9 +372,12 @@ class JobDataTest(OfflineTestCase):
             for p in reversed(patches):
                 p.stop()
         state = dlv.load_status(self.project)
-        email, agent = self._asset(state, "email"), self._asset(state, "agent")
+        email, agent, chat = self._asset(state, "email"), self._asset(state, "agent"), self._asset(state, "chat")
         self.assertEqual(self.directed, [])  # prompts are kept
         self.assertEqual(len(texts), 4)
+        self.assertEqual((chat["status"], chat["prompt"], dlv.chat_reply(self.project, chat)),
+                         ("ready", old_chat["prompt"], "reply-2"))  # replayed with the same setup
+        self.assertFalse(os.path.exists(os.path.join(dlv.folder(self.project), old_chat["file"])))
         self.assertEqual((email["status"], email["prompt"], email["qa"]["verdict"]), ("ready", old_email["prompt"],
                                                                                       "pass"))
         self.assertNotEqual(email["file"], old_email["file"])

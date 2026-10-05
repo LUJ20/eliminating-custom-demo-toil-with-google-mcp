@@ -143,8 +143,17 @@ def probe(settings: Settings, model: str, location: str) -> Optional[bool]:
 
 # ---- model-output helpers ---------------------------------------------------------------------------
 def strip_fences(text: str) -> str:
-    m = re.search(r"```[a-zA-Z0-9_-]*\n(.*?)```", text or "", re.S)
-    return (m.group(1) if m else (text or "")).strip()
+    """The content of the model's code fence, or the text itself when there is none. An answer that ends with its
+    closing fence is cut at that last fence, never at the first ``` inside it: generated code often contains a
+    fence of its own, in a prompt string or a usage docstring, and cutting there truncates the code mid-string."""
+    text = (text or "").strip()
+    opening = re.search(r"```[a-zA-Z0-9_-]*\n", text)
+    if opening is None:
+        return text
+    if text.endswith("```"):  # the answer ends with its closing fence: everything in between, inner fences included
+        return text[opening.end():-3].strip()
+    m = re.search(r"```[a-zA-Z0-9_-]*\n(.*?)```", text, re.S)  # a fence followed by prose, or an unclosed fence
+    return (m.group(1) if m else text[opening.end():]).strip()
 
 
 def parse_json(text: str) -> Any:

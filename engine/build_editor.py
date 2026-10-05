@@ -47,6 +47,7 @@ from concurrent.futures import ThreadPoolExecutor
 from engine.common import (MODEL_ID_LITERAL, doc_title, doc_url, file_lock, iso, read_json, redact, write_json,
                            write_text_atomic)
 from engine.config import Settings
+from engine.deck_generator import DECK_VERSION, deck_version
 from engine.mcp_knowledge_client import McpKnowledgeClient
 from engine.model_resolver import ROLES
 from engine.pii_sanitizer import AUDIT_FILE
@@ -174,6 +175,63 @@ def load_result(settings: Settings, project_dir: str) -> Dict[str, Any]:
     except versions.VersionError:
         res["version_id"] = None
     return res
+
+
+_CURRENT_DECKS: Dict[str, Tuple[int, int]] = {}  # deck path -> (mtime_ns, size) of a deck known to be on DECK_VERSION
+
+
+def _deck_current(path: str) -> bool:
+    """True when the deck file was made by the current slide layout (a stat() once it is known: the app asks on
+    every rerun)."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return False
+    sig = (st.st_mtime_ns, st.st_size)
+    if _CURRENT_DECKS.get(path) == sig:
+        return True
+    if deck_version(path) != DECK_VERSION:
+        return False
+    _CURRENT_DECKS[path] = sig
+    return True
+
+
+def refresh_deck(settings: Settings, res: Dict[str, Any]) -> bool:
+    """Regenerate the deck of a finished build (a load_result() result) when it is missing or was made by an older
+    slide layout (deck_generator.DECK_VERSION): the slides are rebuilt from the stored result, no model is called
+    and nothing else in the project changes. -> True when the deck was rewritten."""
+    pd, path = res.get("project_dir") or "", res.get("deck_path") or ""
+    if not (pd and path and res.get("final_status") and res.get("stages") and os.path.isdir(pd)):
+        return False  # not a finished build: nothing to draw the slides from
+    if _deck_current(path):
+        return False
+    with file_lock(os.path.join(settings.cache_dir, f"build_{os.path.basename(pd)}")):
+        if _deck_current(path):  # another process or thread just did it
+            return False
+        _write_binary(pd, path, lambda tmp: render_deck(tmp, res))
+    return True
+
+
+def refresh_decks(settings: Settings) -> List[str]:
+    """refresh_deck for every saved project in the output folder (at app start and before a sample pre-build run,
+    so a new slide layout reaches the saved demos without rebuilding them). -> the slugs whose deck was rewritten.
+    A project that cannot be refreshed is logged and skipped."""
+    root, done = settings.output_dir, []
+    if not os.path.isdir(root):
+        return done
+    for name in sorted(os.listdir(root)):
+        pd = os.path.join(root, name)
+        if name.startswith(".") or os.path.islink(pd) or not all(
+                os.path.isfile(os.path.join(pd, f)) for f in (CONFIG, RESULT_FILE)):
+            continue  # not a generated project
+        try:
+            if refresh_deck(settings, load_result(settings, pd)):
+                done.append(name)
+        except Exception as e:  # one broken project must not stop the sweep
+            logger.warning("deck refresh of %s skipped: %s", name, redact(str(e))[:200])
+    if done:
+        logger.info("deck layout %s: regenerated the deck of %s", DECK_VERSION, ", ".join(done))
+    return done
 
 
 # ---------------------------------------------------------------------------------------------- change plan

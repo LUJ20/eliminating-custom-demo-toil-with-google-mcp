@@ -47,9 +47,9 @@ FLOW = ["Ask", "Ground (MCP)", "Plan + story", "Code", "Judge + fix", "Acceptanc
         "Deliver"]
 LANES = [
     ("EXPERIENCE", "Streamlit · app.py", BLUE, [
-        ("Ask", "Customer and use case in plain words; sample presets across use-case types"),
+        ("Ask", "Customer and use case in plain words; 8 pre-built samples open instantly"),
         ("Saved projects", "Open any stored build with its scorecard, outputs, chat and versions"),
-        ("Result view", "Architecture · demo outputs · code + PII audit · scorecard · story, deck, codebase"),
+        ("Result view", "Architecture · demo outputs · codebase package · scorecard · story script and 5-slide deck"),
         ("Build chat", "Ask anything (answers cite official docs) or change the build: undo, save, discard"),
         ("Settings", "Showcase or Production models · Drive folder · model events with reasons"),
     ]),
@@ -60,6 +60,7 @@ LANES = [
         ("Judge + fix", "Scorecard; failed rows fed back as fixes; up to 3 attempts"),
         ("Acceptance tests", "3-6 tests written from the ask, run on the chosen models"),
         ("Outputs job", "Starts at the first valid plan; 6 in parallel; check, regenerate, keep best"),
+        ("Samples pre-builder", "Builds the 8 samples at start, 4 at once; rebuilds the ones a newer model made stale"),
         ("Chat editor", "Question or change; code edits re-validated, re-judged, re-scored"),
     ]),
     ("BRAIN · KNOWLEDGE · TOOLS", "Gemini · MCP · Google APIs", YELLOW, [
@@ -82,13 +83,14 @@ LANES = [
         ("Demo outputs", "Video with lip-sync, image, speech, music, text, chat, JSON result, agent trace"),
         ("Code", "pipeline.py and a PII-scanned codebase zip"),
         ("Scorecard", "Every row with the judge's reasons; PASSED or BEST EFFORT"),
-        ("Story script + deck", "Google Doc and Slides in Drive mode, else .html and .pptx"),
+        ("Story script + deck", "Talk track and a 5-slide deck with an editable architecture diagram; Doc + Slides in "
+                                "Drive mode, else .html + .pptx"),
         ("Publish", "Drive folder or Cloud Storage"),
     ]),
 ]
 BANDS = [
-    (0, 2, "State", "generated_projects/<slug>: code, outputs, versions  ·  .cache: model registry, telemetry, "
-                    "regression baselines"),
+    (0, 2, "State", "generated_projects/<slug>: code, outputs, versions (mirrored to gs://<bucket>/_projects every "
+                    "minute on Cloud Run)  ·  .cache: model registry, telemetry, regression baselines"),
     (2, 5, "Self-upgrading models", "discover → verify → golden set or canary → promote → watch → regression → "
                                     "roll back or forward (24 h quarantine); failed output checks count against "
                                     "the model"),
@@ -370,7 +372,7 @@ def build_deck(settings, png_path: str, path: str) -> None:
     champs = champions(settings)
 
     s = d.slide(TITLE, "Any customer use case → a grounded, current, story-driven, evaluated demo in minutes")
-    stats = [("≈ 7-8 min", "per custom demo package, all outputs checked", BLUE),
+    stats = [("3-10 min", "per custom demo package, all outputs checked; 8 pre-built samples open instantly", BLUE),
              ("0", "manual model updates: the resolver upgrades, gated by evals", GREEN),
              ("6", "eval layers: build, use case, outputs, chat, model gates, regression", RED),
              (str(len(projects)), "saved projects across use-case types", PURPLE)]
@@ -413,8 +415,10 @@ def build_deck(settings, png_path: str, path: str) -> None:
         d.box(s, 0.4 + i * 1.57, 2.2, 1.62, 1.9, GREEN if i % 2 else BLUE, t, b, shape=MSO_SHAPE.CHEVRON,
               title_size=13)
     d.text(s, "Then: build chat answers questions with verified doc citations, or changes the build as a new version "
-              "(undo, save, discard). Code edits are re-validated, re-judged and re-scored with a diff.",
-           0.5, 4.7, 12.3, 1.0, 15, False, INK)
+              "(undo, save, discard). Code edits are re-validated, re-judged and re-scored with a diff.\n"
+              "The 8 sidebar samples are built ahead of time (at start, 4 at once) and rebuilt only when a newer model "
+              "made them stale; a new slide layout just redraws their decks from the stored result.",
+           0.5, 4.7, 12.3, 1.6, 15, False, INK)
 
     s = d.slide("Any use case, not just media", "Saved projects (newest first), read from the output folder")
     rows = [["Customer", "Use case", "Outputs", "Score", "End to end"]]
@@ -437,8 +441,9 @@ def build_deck(settings, png_path: str, path: str) -> None:
     d.text(s, "1  Discover new model IDs in official docs (MCP)\n2  Verify in Model Garden and with a live call\n"
               "3  Test: 9-task golden set (text) or a real sample (media)\n4  Promote only if at least as good\n"
               "5  Watch every call; failed output checks count\n6  Rebuild 4 reference use cases after an upgrade\n"
-              "7  Roll back + 24 h quarantine, or roll forward\n\nIgnored, never a rollback: expired credentials, "
-              "network, project setup, rate limits (HTTP 429)", 0.5, 1.5, 6.0, 5.0, 15, False, INK)
+              "7  Roll back + 24 h quarantine, or roll forward\n8  Rebuild the sample demos the old model built\n\n"
+              "Ignored, never a rollback: expired credentials, network, project setup, rate limits (HTTP 429)",
+           0.5, 1.5, 6.0, 5.0, 15, False, INK)
     if champs:
         d.table(s, [["Tier", "Current model"]] + [[t, m] for t, m in champs], 7.0, 1.5, 5.8, [2.0, 3.8], size=11)
 
@@ -454,12 +459,13 @@ def build_deck(settings, png_path: str, path: str) -> None:
     s = d.slide("Status and next steps")
     d.box(s, 0.5, 1.3, 6.0, 4.9, GREEN, "Built",
           "Grounded planning, codegen, judge loop · acceptance tests for any use case · output checks for 8 output "
-          "types · storytelling, story script, deck · build chat with citations, change checks, code edits, versions · "
-          "self-upgrading models with golden set, canary, watch, drift, regression · saved projects · offline unit "
+          "types · story script and 5-slide deck with an editable architecture diagram · build chat with citations, "
+          "change checks, code edits, versions · self-upgrading models with golden set, canary, watch, drift, "
+          "regression · 8 pre-built samples kept current · Cloud Run + IAP with bucket-backed projects · offline unit "
           "tests and a chat intent set")
     d.box(s, 6.8, 1.3, 6.0, 4.9, BLUE, "Next",
           "Run generated code in an isolated Cloud Run job as part of acceptance · Live API conversation canary · "
-          "Cloud Run + IAP, Firestore state · optional: ADK only if chat should act through tools on its own or "
+          "Firestore state for many instances · optional: ADK only if chat should act through tools on its own or "
           "the Studio moves to a managed agent runtime")
     d.save(path)
 

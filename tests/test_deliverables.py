@@ -11,7 +11,7 @@ from unittest import mock
 import pptx
 
 from engine import brain, deliverables as dlv, manifest, media, vertex
-from engine.deck_generator import build_usecase_deck
+from engine.deck_generator import DECK_VERSION, build_usecase_deck, deck_version
 from engine.model_resolver import ModelResolver
 from engine.troubleshooter import OutputError, StepFailed, Troubleshooter
 from fakes import FakeMcp, OfflineTestCase, entry, seed_registry
@@ -178,9 +178,16 @@ class JobTest(OfflineTestCase):
             frames.append(first_frame)
             return b"mp4", "video/mp4"
 
+        turns = []
+
+        def fake_chat(settings, model, location, system, history):
+            turns.append((system, [h["text"] for h in history]))
+            return "Welcome back, Aiko. Your flight leaves at 09:40."
+
         with mock.patch.object(brain, "direct_media", side_effect=self._direction), \
                 mock.patch.object(media, "image", return_value=(b"png", "image/png")), \
                 mock.patch.object(media, "video", side_effect=fake_video), \
+                mock.patch.object(media, "chat", side_effect=fake_chat), \
                 mock.patch.object(dlv, "McpKnowledgeClient", return_value=FakeMcp()):
             dlv.start(self.settings, build_id="b1", project_dir=self.project, customer="Acme", ask="a", summary="s",
                       deliverables=self.items)
@@ -191,6 +198,11 @@ class JobTest(OfflineTestCase):
         self.assertEqual(frames, [(b"png", "image/png")] * 6)  # every language starts from the same avatar
         video = next(d for d in state["deliverables"] if d["id"] == "greeting")
         self.assertTrue(all(dlv.asset_path(self.project, a) for a in video["assets"]))
+        # the chat's first turn was played with the director's setup; the reply is the chat's file
+        chat = next(d for d in state["deliverables"] if d["id"] == "chat")
+        self.assertEqual(turns, [(chat["assets"][0]["prompt"], [chat["assets"][0]["script"]])])
+        self.assertEqual(dlv.chat_reply(self.project, chat["assets"][0]), "Welcome back, Aiko. Your flight leaves at 09:40.")
+        self.assertEqual(chat["assets"][0]["mime"], "text/markdown")
 
     def test_a_rebuild_stops_the_old_job(self):
         os.makedirs(dlv.folder(self.project))
@@ -233,11 +245,16 @@ class DeckTest(OfflineTestCase):
         text = " ".join(sh.text_frame.text for sl in prs.slides for sh in sl.shapes if sh.has_text_frame)
         cells = " ".join(c.text for sl in prs.slides for sh in sl.shapes if sh.has_table
                          for row in sh.table.rows for c in row.cells)
-        self.assertEqual(len(prs.slides), 6)
+        self.assertEqual(len(prs.slides), 5)
+        self.assertEqual(prs.core_properties.version, DECK_VERSION)
+        self.assertEqual(deck_version(path), DECK_VERSION)
+        self.assertEqual(deck_version(os.path.join(self.tmp, "missing.pptx")), "")
         self.assertIn("61.5%", text)
         self.assertIn("FAIL", cells)
         self.assertIn("Lip-synced greeting", cells)
         self.assertNotIn("85%", text + cells)
+        notes = " ".join(sl.notes_slide.notes_text_frame.text for sl in prs.slides if sl.has_notes_slide)
+        self.assertIn("Cloud Run", notes)  # the architecture slide's talk track names the stage
 
 
 if __name__ == "__main__":

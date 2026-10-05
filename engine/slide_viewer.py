@@ -12,8 +12,12 @@ from typing import Optional
 try:
     import pptx
     from pptx.enum.shapes import MSO_SHAPE
+    # arrow auto-shapes (the deck's architecture flow) -> the glyph the player draws for them
+    ARROW_GLYPHS = {MSO_SHAPE.RIGHT_ARROW: "➜", MSO_SHAPE.LEFT_ARROW: "⬅", MSO_SHAPE.DOWN_ARROW: "⬇",
+                    MSO_SHAPE.UP_ARROW: "⬆"}
 except ImportError:
     pptx = None
+    ARROW_GLYPHS = {}
 
 
 def render_presentation_player(deck_path: str, gslides_url: Optional[str] = None, height: int = 520) -> str:
@@ -93,14 +97,16 @@ def render_presentation_player(deck_path: str, gslides_url: Optional[str] = None
 
             radius_css = "5px"
             try:
-                if getattr(shp, "auto_shape_type", None) == MSO_SHAPE.OVAL:
+                kind = getattr(shp, "auto_shape_type", None)
+                if kind == MSO_SHAPE.OVAL:
                     radius_css = "50%"
-                elif getattr(shp, "auto_shape_type", None) == MSO_SHAPE.RIGHT_ARROW:
-                    # Render as styled arrow symbol if arrow
+                elif kind in ARROW_GLYPHS:
+                    # Arrows (the architecture flow) render as a symbol in the arrow's colour, not as a filled box
+                    color = bg_hex if bg_hex != "transparent" else "#1A73E8"
                     shape_divs.append(
                         f'<div style="position:absolute;left:{l_pct}%;top:{t_pct}%;width:{w_pct}%;height:{h_pct}%;'
-                        f'display:flex;align-items:center;justify-content:center;color:#1A73E8;font-size:1.6cqw;font-weight:bold;z-index:2;">'
-                        f'➜</div>'
+                        f'display:flex;align-items:center;justify-content:center;color:{color};font-size:1.6cqw;'
+                        f'font-weight:bold;z-index:2;">{ARROW_GLYPHS[kind]}</div>'
                     )
                     continue
             except Exception:
@@ -189,7 +195,7 @@ def render_presentation_player(deck_path: str, gslides_url: Optional[str] = None
       <div style="position:relative;background:#121212;height:435px;display:flex;align-items:center;justify-content:center;padding:10px 8px;">
         <div style="position:absolute;top:12px;right:16px;z-index:20;">
           <button onclick="toggleNotes()" style="background:rgba(32,33,36,0.9);border:1px solid #747775;color:#FFF;padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12px;display:flex;align-items:center;gap:6px;">
-            <span>📄</span> <span>Speaker Notes</span>
+            <span>Speaker Notes</span>
           </button>
         </div>
         <div id="gs_container" style="display:flex;align-items:center;justify-content:center;width:100%;height:100%;">

@@ -36,7 +36,7 @@ SOFT_CHECKS = frozenset({"on_task"})  # reported, but a test can pass without th
 NEEDS_FACTS = frozenset({"answer", "conversation", "generation"})
 MIN_TESTS, DEFAULT_TESTS, MAX_TESTS = 3, 6, 12
 DEFAULT_MIN_PASS = 0.8
-MAX_PARALLEL = 4
+MAX_PARALLEL = 6        # = DEFAULT_TESTS: a default-sized run is one round of tests, not two
 MAX_INPUT = 1200
 MAX_FACTS, MAX_FACT = 5, 160
 MAX_LIST = 8            # tools and forbidden items per test
