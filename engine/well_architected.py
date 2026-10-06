@@ -43,6 +43,7 @@ DOCS_TTL_S = 24 * 3600         # the Framework changes rarely: one MCP lookup pe
 REVIEW_FILE = "WELL_ARCHITECTED_REVIEW.md"
 READY, NEEDS_WORK = "Ready for design review", "Needs work before design review"
 MAX_TEXT = 300
+SNIPPET_CHARS = 1200           # of each retrieved page in the prompt: enough for a pillar's principles list
 
 _CACHE: Dict[str, object] = {"at": 0.0, "docs": []}
 _LOCK = threading.Lock()
@@ -71,7 +72,7 @@ def framework_docs(mcp, now: Optional[float] = None) -> List[dict]:
         if url and parent not in seen and not url.rstrip("/").endswith("/printable"):  # the print copy of a page
             seen.add(parent)
             docs.append({"parent": parent, "title": doc_title(parent), "url": url,
-                         "snippet": " ".join((r.get("content") or "").split())[:600]})
+                         "snippet": " ".join((r.get("content") or "").split())[:SNIPPET_CHARS]})
     docs.sort(key=lambda d: FRAMEWORK_PATH not in d["url"])  # stable: Framework pages first
     docs = docs[:MAX_DOCS]
     if docs:
@@ -94,7 +95,7 @@ def _design_block(blueprint: dict) -> str:
 
 
 def _docs_block(docs: List[dict]) -> str:
-    return "\n".join(f"[{i + 1}] {d['title']} ({d['url']}): {d['snippet'][:450]}" for i, d in enumerate(docs))
+    return "\n".join(f"[{i + 1}] {d['title']} ({d['url']}): {d['snippet'][:SNIPPET_CHARS]}" for i, d in enumerate(docs))
 
 
 def review(settings: Settings, model: str, location: str, hint: str, *, customer: str, ask: str, blueprint: dict,
@@ -110,11 +111,15 @@ Customer ask: {_clean(ask, 1200)}
 Design (JSON): {_design_block(blueprint)}
 Framework pages retrieved by the Developer Knowledge MCP server (your only sources):
 {_docs_block(docs)}
-For each pillar, judge THIS design, not Google Cloud in general. Score 1 (poor) to 5 (excellent): 5 means the
-design already follows the pillar's principles for a demo of this kind; 3 means acceptable with named gaps; 1 means
-the pillar is ignored. Write one specific finding (what the design does or lacks, naming the stage or service) and
-one actionable recommendation (what to add or change, naming the Google Cloud service or setting), and cite the
-source number that supports the recommendation. Keep every sentence under 40 words. Use only the sources above.
+For each pillar, judge THIS design, not Google Cloud in general. It is a demo architecture for a customer pitch, not
+a production deployment: credit what the design already does (managed services, a specific product per stage, review
+or safety stages, the newest models) before listing what it lacks, and do not expect runbooks or budgets. Score 1
+(poor) to 5 (excellent): 5 means the design already shows the pillar's principles for a demo of this kind; 4 means
+it shows them with one minor gap; 3 means acceptable for a demo, with named gaps to close before a design review;
+2 means a principle the demo should show is missing; 1 means the pillar is ignored or contradicted. Write one
+specific finding (what the design does or lacks, naming the stage or service) and one concrete recommendation
+(the Google Cloud service, API or setting to add or change, and where in the design), and cite the source number
+that supports the recommendation. Keep every sentence under 40 words. Use only the sources above.
 {f"Your previous answer was rejected: {hint}" if hint else ""}
 Return JSON only: {{"pillars": {{{schema}}}, "summary": "<two sentences for the design reviewer>"}}"""
     text, _ = vertex.generate(settings, model, prompt, location=location, json_mode=True)
