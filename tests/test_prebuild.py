@@ -12,7 +12,7 @@ from engine import model_resolver as mr
 from engine import prebuild
 from engine.common import read_json, write_json
 from engine.deck_generator import DECK_VERSION, deck_version
-from engine.usecase_synthesizer import RESULT_FILE
+from engine.usecase_synthesizer import BUILD_GENERATION, RESULT_FILE
 from fakes import OfflineTestCase, seed_registry
 
 CUSTOMER = "Cymbal Air"
@@ -21,14 +21,16 @@ CURRENT_MODELS = {"reasoning": {"model": "gemini-3.1-pro-preview", "location": "
                   "fast": {"model": "gemini-3.8-flash", "location": "global"}}
 
 
-def save_result(settings, customer=CUSTOMER, ask=ASK, final_status="PASS", mode=None, models=None) -> str:
+def save_result(settings, customer=CUSTOMER, ask=ASK, final_status="PASS", mode=None, models=None,
+                generation=BUILD_GENERATION) -> str:
     """A finished build's result file in the customer's project folder, as the synthesizer writes it."""
     folder = prebuild.project_dir(settings, customer)
     os.makedirs(folder, exist_ok=True)
     write_json(os.path.join(folder, RESULT_FILE),
                {"customer_name": customer, "usecase_ask": ask, "final_status": final_status,
                 "mode": settings.mode if mode is None else mode, "score": 0.9,
-                "models": CURRENT_MODELS if models is None else models, "project_dir": folder})
+                "models": CURRENT_MODELS if models is None else models, "project_dir": folder,
+                "generation": generation})
     return folder
 
 
@@ -70,6 +72,17 @@ class StalenessTest(OfflineTestCase):
         self.assertEqual("newer model in use for fast: gemini-2.5-flash -> gemini-3.8-flash",
                          prebuild.staleness(self.settings, CUSTOMER, ASK))
         self.assertIsNone(prebuild.current(self.settings, CUSTOMER, ASK))
+
+    def test_an_older_studio_generation_makes_it_stale(self):
+        save_result(self.settings, generation=BUILD_GENERATION - 1)
+        self.assertEqual(f"built by studio generation {BUILD_GENERATION - 1}, now {BUILD_GENERATION}",
+                         prebuild.staleness(self.settings, CUSTOMER, ASK))
+        self.assertIsNone(prebuild.current(self.settings, CUSTOMER, ASK))
+        folder = prebuild.project_dir(self.settings, CUSTOMER)
+        res = read_json(os.path.join(folder, RESULT_FILE), {})
+        del res["generation"]  # a result from before the stamp existed counts as generation 1
+        write_json(os.path.join(folder, RESULT_FILE), res)
+        self.assertTrue(prebuild.staleness(self.settings, CUSTOMER, ASK).startswith("built by studio generation 1"))
 
     def test_a_tier_without_a_model_right_now_keeps_the_demo(self):
         save_result(self.settings, models={**CURRENT_MODELS, "video": {"model": "veo-3.1", "location": "global"}})

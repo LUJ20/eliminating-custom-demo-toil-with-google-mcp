@@ -73,6 +73,12 @@ class TextTest(unittest.TestCase):
         self.assertNotIn("ya29.a0AfH6SMB", out)
         self.assertIn("j***@corp.example.com", out)
 
+    def test_redact_keeps_service_accounts(self):
+        sa = "studio@demo-proj.iam.gserviceaccount.com"
+        out = common.redact(f"share the folder with {sa}; reported by jane.doe@corp.example.com")
+        self.assertIn(sa, out)  # an infrastructure name the user must copy, not personal data
+        self.assertIn("j***@corp.example.com", out)
+
     def test_slugify(self):
         self.assertEqual(common.slugify("Cymbal Air: Rewards!"), "cymbal_air_rewards")
         self.assertEqual(common.slugify("!!!"), "project")

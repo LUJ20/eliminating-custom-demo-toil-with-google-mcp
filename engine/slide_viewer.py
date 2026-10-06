@@ -11,13 +11,15 @@ from typing import Optional
 
 try:
     import pptx
-    from pptx.enum.shapes import MSO_SHAPE
+    from pptx.enum.shapes import MSO_SHAPE, MSO_SHAPE_TYPE
     # arrow auto-shapes (the deck's architecture flow) -> the glyph the player draws for them
     ARROW_GLYPHS = {MSO_SHAPE.RIGHT_ARROW: "➜", MSO_SHAPE.LEFT_ARROW: "⬅", MSO_SHAPE.DOWN_ARROW: "⬇",
                     MSO_SHAPE.UP_ARROW: "⬆"}
+    LINE_TYPE = MSO_SHAPE_TYPE.LINE  # connectors (the dashed stage -> output lines) are drawn as SVG lines
 except ImportError:
     pptx = None
     ARROW_GLYPHS = {}
+    LINE_TYPE = None
 
 
 def render_presentation_player(deck_path: str, gslides_url: Optional[str] = None, height: int = 520) -> str:
@@ -38,10 +40,22 @@ def render_presentation_player(deck_path: str, gslides_url: Optional[str] = None
 
     for s_idx, slide in enumerate(prs.slides):
         shape_divs = []
+        svg_lines = []  # connectors, drawn once per slide in an overlay
         slide_title = f"Slide {s_idx + 1}"
         first_title_found = False
 
         for shp in slide.shapes:
+            if LINE_TYPE is not None and getattr(shp, "shape_type", None) == LINE_TYPE:
+                try:
+                    x1, y1 = shp.begin_x / sw * 100.0, shp.begin_y / sh * 100.0
+                    x2, y2 = shp.end_x / sw * 100.0, shp.end_y / sh * 100.0
+                    color = f"#{shp.line.color.rgb}" if shp.line.color and shp.line.color.rgb else "#9AA0A6"
+                    dash = ' stroke-dasharray="6 4"' if shp.line.dash_style else ""
+                    svg_lines.append(f'<line x1="{x1:.2f}" y1="{y1:.2f}" x2="{x2:.2f}" y2="{y2:.2f}" '
+                                     f'stroke="{color}" stroke-width="1.5" vector-effect="non-scaling-stroke"{dash}/>')
+                except Exception:
+                    pass
+                continue
             l_pct = round(max(0.0, float(getattr(shp, "left", 0) or 0) / sw * 100.0), 2)
             t_pct = round(max(0.0, float(getattr(shp, "top", 0) or 0) / sh * 100.0), 2)
             w_pct = round(max(0.5, float(getattr(shp, "width", 0) or 0) / sw * 100.0), 2)
@@ -91,7 +105,8 @@ def render_presentation_player(deck_path: str, gslides_url: Optional[str] = None
             border_css = "none"
             try:
                 if shp.line and shp.line.color and shp.line.color.rgb:
-                    border_css = f"1px solid #{shp.line.color.rgb}"
+                    style = "dashed" if shp.line.dash_style else "solid"  # the demo-output group is dashed
+                    border_css = f"1px {style} #{shp.line.color.rgb}"
             except Exception:
                 pass
 
@@ -173,6 +188,10 @@ def render_presentation_player(deck_path: str, gslides_url: Optional[str] = None
 
         disp_style = "block" if s_idx == 0 else "none"
         slide_inner_html = "".join(shape_divs)
+        if svg_lines:  # the connectors, over the shapes and under nothing clickable
+            slide_inner_html += ('<svg viewBox="0 0 100 100" preserveAspectRatio="none" style="position:absolute;'
+                                 'left:0;top:0;width:100%;height:100%;z-index:3;pointer-events:none;">'
+                                 + "".join(svg_lines) + '</svg>')
         slides_html.append(
             f'<div class="gslide-frame" id="gslide_{s_idx}" style="display:{disp_style};container-type:inline-size;position:relative;width:97%;height:410px;background:#FFFFFF;overflow:hidden;border-radius:4px;box-shadow:0 3px 12px rgba(0,0,0,0.25);">'
             f'{slide_inner_html}'

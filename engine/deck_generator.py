@@ -4,19 +4,24 @@ planner's design, the deliverables manifest, the rubric, the attempts and the do
 is invented (no ROI claims, no canned bullets). The speaker notes carry the talk track for each slide.
 
   1. Opening: the demo story (hero, challenge, scenes, payoff) when the build has one, else the solution overview
-  2. Reference architecture: an editable flow diagram, one shape per stage coloured by capability tier, with
-     arrows, a legend and one speaker-note point per stage
+  2. Reference architecture: the studio's diagram as editable shapes: the stages in execution order coloured by
+     capability tier and joined by arrows, the hero on the left, the demo outputs in a dashed group on the right
+     with a dashed arrow from the stage that produces them, what each stage does underneath, a legend, and one
+     speaker-note point per stage
   3. Demo deliverables: what the demo lets a viewer see or hear, per kind, model and variant
   4. Proof: the scorecard (rubric rows, pass / fail from the rubric itself, attempts) and what's new in the models
   5. Package and next steps: files shipped, how models stay current, how to run it
 """
 import os
+import re
 from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 import pptx
 from pptx.dml.color import RGBColor
-from pptx.enum.shapes import MSO_SHAPE
+from pptx.enum.dml import MSO_LINE
+from pptx.enum.shapes import MSO_CONNECTOR, MSO_SHAPE
 from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
+from pptx.oxml.ns import qn
 from pptx.util import Emu, Inches, Pt
 
 from engine import manifest
@@ -54,8 +59,11 @@ MAX_CELL_CHARS = 240
 MAX_FEATURE_ROWS = 8
 MAX_RUBRIC_ROWS = 11
 BLANK_LAYOUT = 6
-DECK_VERSION = "4"  # the slide layout; stamped into every deck. Bump it when the slides change: saved decks made
+DECK_VERSION = "5"  # the slide layout; stamped into every deck. Bump it when the slides change: saved decks made
                     # by an older layout are then regenerated from the stored result (build_editor.refresh_deck)
+GREY_LINE = RGBColor(154, 160, 166)
+OUTPUT_COL_W = Inches(2.4)  # the "Demo output" column of the architecture slide
+MAX_OUTPUT_CARDS = 5        # outputs drawn in that column; the rest are counted (all are on the deliverables slide)
 
 
 class Line(NamedTuple):
@@ -101,7 +109,7 @@ def _textbox(slide, left, top, width, height, lines: Sequence[Line]) -> None:
 
 
 def _card(slide, left, top, width, height, lines: Sequence[Line], fill: RGBColor = WHITE,
-          border: RGBColor = BORDER, radius: float = 0.05) -> None:
+          border: RGBColor = BORDER, radius: float = 0.05, margin=Inches(0.14)) -> None:
     shape = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, left, top, width, height)
     shape.adjustments[0] = radius
     shape.fill.solid()
@@ -111,8 +119,8 @@ def _card(slide, left, top, width, height, lines: Sequence[Line], fill: RGBColor
     shape.shadow.inherit = False
     tf = shape.text_frame
     tf.vertical_anchor = MSO_ANCHOR.TOP
-    tf.margin_left = tf.margin_right = Inches(0.14)
-    tf.margin_top = tf.margin_bottom = Inches(0.12)
+    tf.margin_left = tf.margin_right = margin
+    tf.margin_top = tf.margin_bottom = min(margin, Inches(0.12))
     _fill(tf, lines)
 
 
@@ -122,6 +130,29 @@ def _shape(slide, kind, left, top, width, height, color: RGBColor) -> None:
     shape.fill.fore_color.rgb = color
     shape.line.fill.background()
     shape.shadow.inherit = False
+
+
+def _dashed_box(slide, left, top, width, height, color: RGBColor = BORDER) -> None:
+    """An empty rounded rectangle with a dashed outline: the demo-output group, as in the studio's diagram."""
+    shape = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, left, top, width, height)
+    shape.adjustments[0] = 0.06
+    shape.fill.background()
+    shape.line.color.rgb = color
+    shape.line.width = Pt(1.2)
+    shape.line.dash_style = MSO_LINE.DASH
+    shape.shadow.inherit = False
+
+
+def _connector(slide, x1, y1, x2, y2, color: RGBColor = GREY_LINE, dashed: bool = True) -> None:
+    """A straight connector with an arrowhead at its end: dashed from a stage to the output it produces, solid
+    from the end of one row of stages to the start of the next."""
+    c = slide.shapes.add_connector(MSO_CONNECTOR.STRAIGHT, x1, y1, x2, y2)
+    c.line.color.rgb = color
+    c.line.width = Pt(1.25 if dashed else 1.75)
+    if dashed:
+        c.line.dash_style = MSO_LINE.DASH
+    ln = c.line._get_or_add_ln()
+    ln.append(ln.makeelement(qn("a:tailEnd"), {"type": "triangle", "w": "med", "len": "med"}))
 
 
 def _new_slide(prs, title: str, subtitle: str, notes: str):
@@ -219,6 +250,12 @@ def _overview(prs, customer: str, ask: str, summary: str, mode: str, final_statu
     _card(s, Inches(8.3), BODY_TOP, Inches(4.28), Inches(5.6), facts, WHITE, BORDER)
 
 
+def _numbered(i: int, name) -> str:
+    """'3. Driver Navigation' as the planner wrote it; a number is added only when the name has none."""
+    name = " ".join(str(name or "").split())
+    return name if re.match(r"^\d+[.)]\s", name) else f"{i}. {name}"
+
+
 def _stage_note(i: int, st: dict) -> str:
     feats = [f["name"] for f in st.get("features", []) if isinstance(f, dict) and f.get("name")]
     note = f"{i}. {st.get('stage')}: {st.get('service')} ({st.get('api')}). {st.get('description', '')}"
@@ -231,14 +268,21 @@ def _stage_note(i: int, st: dict) -> str:
     return note
 
 
-def _architecture(prs, customer: str, stages: List[dict], mode: str, story: Optional[dict]) -> None:
-    """The reference architecture as an editable flow diagram: one shape per stage in execution order (left to
-    right, then the next row right to left so the arrows stay short), coloured by capability tier, with a legend.
-    The notes give one point per stage and the points to make about the design as a whole."""
+def _architecture(prs, customer: str, stages: List[dict], mode: str, story: Optional[dict],
+                  deliverables: Optional[List[dict]] = None) -> None:
+    """The reference architecture as the studio's diagram, in editable shapes: the stages in one row in execution
+    order (two rows past six stages), coloured by capability tier and joined by arrows; the hero on the left; the
+    demo outputs in a dashed "Demo output" group on the right, each joined to the last stage by a dashed arrow,
+    with the story's outcome under them; what each stage does in a strip under the row; a legend. The notes give
+    one point per stage and the points to make about the design as a whole."""
+    deliverables = deliverables or []
     ai = [st for st in stages if st.get("model")]
     plain = [st for st in stages if not st.get("model")]
     notes = "\n".join([f"Walk the flow in stage order: {len(stages)} stages, {len(ai)} on Google AI models."]
                       + [_stage_note(i, st) for i, st in enumerate(stages, 1)]
+                      + (["Demo output, what the flow produces: " + "; ".join(
+                          f"{d.get('title')} ({manifest.kind_label(d.get('kind'))})" for d in deliverables) + "."]
+                         if deliverables else [])
                       + ["", "Points to make:",
                          "- Every service, model and feature on this slide cites an official Google doc, read through "
                          "the Developer Knowledge MCP server; nothing here is guessed.",
@@ -250,68 +294,104 @@ def _architecture(prs, customer: str, stages: List[dict], mode: str, story: Opti
                          "- Every stage runs on a Google AI model.",
                          "- Every shape is editable: move, recolour or annotate it for the customer."])
     s = _new_slide(prs, f"Reference architecture: {customer}",
-                   "Stages in execution order · colour = capability tier · every shape is editable", notes)
+                   "Stages in execution order · colour = capability tier · dashed: the demo outputs the flow "
+                   "produces · every shape is editable", notes)
     n = len(stages)
     if not n:
         _textbox(s, LEFT, Inches(1.8), CONTENT_W, Inches(1.0), [Line("The design lists no stages.", 13, MUTED)])
         return
-    per_row = n if n <= MAX_PER_ROW else (n + 1) // 2
+    pill_w, gap = Inches(1.15), Inches(0.24)
+    arrow_w, arrow_h = Inches(0.18), Inches(0.22)
+    right_w = OUTPUT_COL_W if deliverables else pill_w  # the right column: the outputs, else the outcome pill
+    area_left, area_right = LEFT + pill_w + gap, LEFT + CONTENT_W - right_w - gap
+    per_row = n if n <= 6 else (n + 1) // 2
     rows = (n + per_row - 1) // per_row
-    hero = _cut((story or {}).get("hero", ""), 40) if story else ""
-    pill_w, gap = Inches(1.15), Inches(0.3)
-    arrow_w, arrow_h = Inches(0.22), Inches(0.26)
-    area_left, area_w = LEFT + pill_w + gap, CONTENT_W - 2 * (pill_w + gap)
-    card_w = Emu(int((area_w - gap * (per_row - 1)) / per_row))
-    top, row_gap = Inches(1.45), Inches(0.5)
-    card_h = Inches(4.9) if rows == 1 else Emu(int((Inches(5.25) - row_gap * (rows - 1)) / rows))
-    size = 9.5 if per_row <= 3 else 8.5
-    desc_chars = 300 if rows == 1 else 130
-    positions = []  # (left, top) of each stage card
+    box_w = Emu(int((area_right - area_left - gap * (per_row - 1)) / per_row))
+    rich = rows > 1  # two rows: what each stage does goes into the boxes, there is no strip under them
+    box_h, row_gap, top = Inches(2.25) if rich else Inches(1.5), Inches(0.45), Inches(1.5)
+    size = 8.5 if per_row <= 4 else 8 if per_row == 5 else 7.5
+    positions = []  # (left, top) of each stage box, rows left to right
     for i, st in enumerate(stages):
         r, c = divmod(i, per_row)
-        col = c if r % 2 == 0 else per_row - 1 - c  # snake: odd rows run right to left
-        left, y = area_left + col * (card_w + gap), top + r * (card_h + row_gap)
+        left, y = area_left + c * (box_w + gap), top + r * (box_h + row_gap)
         positions.append((left, y))
         fill, border = tier_colors(st.get("tier", ""))
-        feats = [f["name"] for f in st.get("features", []) if isinstance(f, dict)]
-        lines = [Line(_cut(st.get("stage"), 60), size + 2, DARK_BLUE, True),
-                 Line(_cut(st.get("service"), 60), size + 0.5, HEADER, True),
-                 Line(f"Model: {st['model']}" if st.get("model") else "No AI model", size,
+        lines = [Line(_cut(_numbered(i + 1, st.get("stage")), 48), size + 0.5, DARK_BLUE, True),
+                 Line(f"[{_cut(st.get('service'), 40)}]", size, HEADER, True),
+                 Line(f"{st['model']} ({st.get('tier')})" if st.get("model") else "No AI model", size - 0.5,
                       border if st.get("model") else MUTED, bool(st.get("model"))),
-                 Line(f"API: {_cut(st.get('api'), 60)}", size - 1, BLUE), Line(""),
-                 Line(_cut(st.get("description"), desc_chars), size - 0.5, BODY)]
-        if feats:
-            lines += [Line("Showcases: " + ", ".join(feats[:2]), size - 1, GREEN, True)]
-        if st.get("doc_title") and rows == 1:
-            lines += [Line(f"Doc: {_cut(st['doc_title'], 45)}", size - 1.5, MUTED, False, st.get("doc_url", ""))]
-        _card(s, left, y, card_w, card_h, lines, fill, border)
-    for i in range(n - 1):  # arrows between consecutive stages
+                 Line(_cut(st.get("api"), 40), size - 1, BLUE)]
+        if rich:
+            lines += [Line(""), Line(_cut(st.get("description"), 100 if per_row >= 4 else 130), size - 0.5, BODY)]
+            feats = [f["name"] for f in st.get("features", []) if isinstance(f, dict) and f.get("name")]
+            if feats:
+                lines.append(Line("Showcases: " + ", ".join(feats[:2]), size - 1, GREEN, True))
+        _card(s, left, y, box_w, box_h, lines, fill, border, margin=Inches(0.08))
+    for i in range(n - 1):  # arrows between consecutive stages; a straight connector from one row to the next
         (l1, y1), (l2, y2) = positions[i], positions[i + 1]
         if y1 == y2:
-            x = min(l1, l2) + card_w + (gap - arrow_w) // 2
-            _shape(s, MSO_SHAPE.RIGHT_ARROW if l2 > l1 else MSO_SHAPE.LEFT_ARROW, x,
-                   y1 + (card_h - arrow_h) // 2, arrow_w, arrow_h, BLUE)
+            _shape(s, MSO_SHAPE.RIGHT_ARROW, l1 + box_w + (gap - arrow_w) // 2, y1 + (box_h - arrow_h) // 2,
+                   arrow_w, arrow_h, BLUE)
         else:
-            _shape(s, MSO_SHAPE.DOWN_ARROW, l1 + (card_w - arrow_h) // 2, y1 + card_h + (row_gap - arrow_w) // 2,
-                   arrow_h, arrow_w, BLUE)
-    first_y, (last_l, last_y) = positions[0][1], positions[-1]
-    pill_h = Inches(1.75)  # room for a 40-character hero / 60-character outcome at this width
-    _card(s, LEFT, first_y + (card_h - pill_h) // 2, pill_w, pill_h,
-          [Line("Who", 9, MUTED, True), Line(hero or "The user", 9.5, HEADER, True)], GREY_FILL, BORDER, 0.3)
-    _shape(s, MSO_SHAPE.RIGHT_ARROW, LEFT + pill_w + (gap - arrow_w) // 2, first_y + (card_h - arrow_h) // 2,
-           arrow_w, arrow_h, BLUE)
+            _connector(s, l1 + box_w // 2, y1 + box_h, l2 + box_w // 2, y2, BLUE, dashed=False)
+    hero = _cut((story or {}).get("hero", ""), 40) if story else ""
     outcome = _cut((story or {}).get("payoff", ""), 60) if story else ""
-    forward = rows % 2 == 1  # the last row runs left to right: the outcome follows the last card on its right
-    end_left = last_l + card_w + gap if forward else last_l - gap - pill_w
-    _card(s, end_left, last_y + (card_h - pill_h) // 2, pill_w, pill_h,
-          [Line("Outcome", 9, MUTED, True), Line(outcome or "Result delivered", 9.5, GREEN, True)],
-          LIGHT_GREEN, GREEN, 0.3)
-    _shape(s, MSO_SHAPE.RIGHT_ARROW if forward else MSO_SHAPE.LEFT_ARROW,
-           (last_l + card_w if forward else last_l - gap) + (gap - arrow_w) // 2,
-           last_y + (card_h - arrow_h) // 2, arrow_w, arrow_h, BLUE)
+    pill_h = min(box_h, Inches(1.5))
+    first_y = positions[0][1]
+    _card(s, LEFT, first_y + (box_h - pill_h) // 2, pill_w, pill_h,
+          [Line("Who", 9, MUTED, True), Line(hero or "The user", 9.5, HEADER, True)], GREY_FILL, BORDER, 0.3)
+    _shape(s, MSO_SHAPE.RIGHT_ARROW, LEFT + pill_w + (gap - arrow_w) // 2, first_y + (box_h - arrow_h) // 2,
+           arrow_w, arrow_h, BLUE)
+    last_l, last_y = positions[-1]
+    col_left = LEFT + CONTENT_W - right_w
+    outcome_lines = [Line("Outcome", 9, MUTED, True), Line(outcome or "Result delivered", 9.5, GREEN, True)]
+    if deliverables:  # the demo-output group, each output joined to the last stage, the outcome under the group
+        shown, more = deliverables[:MAX_OUTPUT_CARDS], len(deliverables) - MAX_OUTPUT_CARDS
+        pad, head_h, card_h, card_gap = Inches(0.1), Inches(0.34), Inches(0.6), Inches(0.08)
+        group_h = head_h + pad + len(shown) * (card_h + card_gap) + (Inches(0.24) if more > 0 else 0) + pad
+        _dashed_box(s, col_left, top, right_w, group_h)
+        _textbox(s, col_left + pad, top + Inches(0.03), right_w - 2 * pad, head_h,
+                 [Line("Demo output", 10, HEADER, True)])
+        for j, d in enumerate(shown):
+            y = top + head_h + pad + j * (card_h + card_gap)
+            fill, border = tier_colors(d.get("tier") or "")
+            k = len(d.get("variants") or [])
+            _card(s, col_left + pad, y, right_w - 2 * pad, card_h,
+                  [Line(_cut(d.get("title"), 44), 8.5, HEADER, True),
+                   Line(f"{manifest.kind_label(d.get('kind'))} · {k} variant{'s' if k != 1 else ''}", 7.5, MUTED)],
+                  fill, border, 0.08)
+            _connector(s, last_l + box_w, last_y + box_h // 2, col_left + pad, y + card_h // 2)
+        if more > 0:
+            _textbox(s, col_left + pad, top + group_h - pad - Inches(0.24), right_w - 2 * pad, Inches(0.24),
+                     [Line(f"+ {more} more on the deliverables slide", 7.5, MUTED)])
+        _card(s, col_left, Inches(5.85), right_w, Inches(0.95), outcome_lines, LIGHT_GREEN, GREEN, 0.3)
+    else:  # no outputs: the outcome follows the last stage
+        _card(s, last_l + box_w + gap, last_y + (box_h - pill_h) // 2, pill_w, pill_h, outcome_lines,
+              LIGHT_GREEN, GREEN, 0.3)
+        _shape(s, MSO_SHAPE.RIGHT_ARROW, last_l + box_w + (gap - arrow_w) // 2, last_y + (box_h - arrow_h) // 2,
+               arrow_w, arrow_h, BLUE)
+    if not rich:  # what each stage does, under the row
+        strip_top = top + box_h + Inches(0.25)
+        _textbox(s, LEFT, strip_top, Inches(4), Inches(0.28), [Line("What each stage does", 9.5, MUTED, True)])
+        cols = n if n <= 3 else (n + 1) // 2
+        srows = (n + cols - 1) // cols
+        cards_top, sgap = strip_top + Inches(0.3), Inches(0.15)
+        s_h = Emu(int((Inches(6.7) - cards_top - sgap * (srows - 1)) / srows))
+        s_w = Emu(int((area_right - LEFT - gap * (cols - 1)) / cols))
+        for i, st in enumerate(stages):
+            r, c = divmod(i, cols)
+            feats = [f["name"] for f in st.get("features", []) if isinstance(f, dict) and f.get("name")]
+            desc_max = 300 if srows == 1 else (110 if feats else 150)  # a Showcases line needs its own room
+            lines = [Line(_cut(_numbered(i + 1, st.get("stage")), 50), 9.5, HEADER, True),
+                     Line(_cut(st.get("description"), desc_max), 8.5, BODY)]
+            if feats:
+                lines.append(Line("Showcases: " + ", ".join(feats[:2]), 8, GREEN, True))
+            if st.get("doc_title"):
+                lines.append(Line(f"Doc: {_cut(st['doc_title'], 45)}", 7.5, MUTED, False, st.get("doc_url", "")))
+            _card(s, LEFT + c * (s_w + gap), cards_top + r * (s_h + sgap), s_w, s_h, lines, WHITE, BORDER)
     # legend: the tiers in use
     tiers = list(dict.fromkeys(st.get("tier") for st in stages if st.get("model")))
-    x, y = LEFT, Inches(6.95)
+    x, y = LEFT, Inches(7.0)
     for tier in tiers + ([""] if plain else []):
         fill, border = tier_colors(tier)
         label = TIER_LABELS.get(tier, tier) if tier else "No AI model (Google Cloud service)"
@@ -323,7 +403,6 @@ def _architecture(prs, customer: str, stages: List[dict], mode: str, story: Opti
         w = Inches(0.3 + 0.085 * len(label))
         _textbox(s, x + Inches(0.26), y - Inches(0.02), w, Inches(0.35), [Line(label, 9, BODY)])
         x += Inches(0.3) + w
-
 
 def _deliverables(prs, customer: str, deliverables: List[dict]) -> None:
     notes = "\n".join(f"{d['title']} ({manifest.kind_label(d['kind'])}): {d['brief']} Variants: "
@@ -427,7 +506,7 @@ def build_usecase_deck(output_path: str, *, customer: str, ask: str, summary: st
         _story(prs, customer, story, deliverables, ask, summary)
     else:
         _overview(prs, customer, ask, summary, mode, final_status, score, stages, deliverables)
-    _architecture(prs, customer, stages, mode, story if story and story.get("beats") else None)
+    _architecture(prs, customer, stages, mode, story if story and story.get("beats") else None, deliverables)
     _deliverables(prs, customer, deliverables)
     _proof(prs, customer, rubric, attempts, whats_new, score, final_status)
     _package(prs, files, mode)

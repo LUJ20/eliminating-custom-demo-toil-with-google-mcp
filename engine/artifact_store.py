@@ -3,6 +3,12 @@
 Drive mode: <Drive folder>/<project name>/. A .pptx becomes Google Slides (embeddable in the UI), a .docx or
             .html (the demo story script) a Google Doc; other files are uploaded as they are. If Drive
             publishing fails, the files go to Cloud Storage instead and the result says why.
+            Credentials (drive_token): locally the gcloud user or Application Default Credentials, whichever
+            carries the Drive scope; on Cloud Run the service account's Drive-scoped token
+            (engine.config.drive_scoped_token: metadata server, then the IAM Credentials API). A service
+            account owns no Drive storage and sees only what is shared with it, so on Cloud Run the folder
+            must be in a shared drive with the service account added as Content manager; a 403 / 404 from
+            Drive is reported with that hint (drive_failure_hint).
 GCS mode:   gs://<bucket>/<project name>/, files uploaded as they are.
 
 Content hashes are kept in <cache dir>/publish_state_<project>.json, so unchanged files are not uploaded again
@@ -20,7 +26,8 @@ from urllib.parse import quote
 import requests
 
 from engine.common import file_lock, read_json, slugify, write_json
-from engine.config import Settings, adc_token, user_token, valid_bucket
+from engine.config import (DRIVE_SCOPE, Settings, adc_token, drive_scoped_token, on_cloud_run, service_account_email,
+                           user_token, valid_bucket)
 from engine.story_doc import STORY_SUFFIX
 
 
@@ -40,10 +47,11 @@ CONVERSIONS = {  # files that Drive converts to Google formats on upload
 FOLDER_MIME = "application/vnd.google-apps.folder"
 DRIVE_API = "https://www.googleapis.com/drive/v3/files"
 DRIVE_UPLOAD = "https://www.googleapis.com/upload/drive/v3/files"
-DRIVE_SCOPE = "https://www.googleapis.com/auth/drive"
 GCS_UPLOAD = "https://storage.googleapis.com/upload/storage/v1/b/{bucket}/o"
 MAX_PARALLEL_UPLOADS = 4
 _DRIVE_ID = re.compile(r"^[A-Za-z0-9_-]{1,200}$")
+# Drive errors that, on Cloud Run, mean the folder is not a shared drive the service account can write to.
+_DRIVE_ACCESS_DENIED = re.compile(r"HTTP 40[34]\b|storageQuotaExceeded|insufficient|permission", re.IGNORECASE)
 
 
 class PublishError(Exception):
@@ -89,14 +97,23 @@ def _has_drive_scope(token: str) -> bool:
     """Checked in a POST body, never in a URL."""
     try:
         r = requests.post("https://oauth2.googleapis.com/tokeninfo", data={"access_token": token}, timeout=15)
-    except requests.RequestException:
+        return r.ok and DRIVE_SCOPE in r.json().get("scope", "").split()
+    except (requests.RequestException, ValueError, AttributeError):
         return False
-    return r.ok and DRIVE_SCOPE in r.json().get("scope", "").split()
 
 
 def drive_token(account: str = "") -> str:
-    """First credential that carries the Drive scope: the gcloud user (`gcloud auth login
-    --enable-gdrive-access`), then Application Default Credentials. Both are fetched and checked in parallel."""
+    """First credential that carries the Drive scope, each checked against tokeninfo before it is used.
+    Locally: the gcloud user (`gcloud auth login --enable-gdrive-access`), then Application Default
+    Credentials, fetched and checked in parallel. On Cloud Run (no user, no gcloud): the service account's
+    Drive-scoped token (engine.config.drive_scoped_token: metadata server, then the IAM Credentials API), then
+    its plain token in case the runtime hands out the scope by itself."""
+    if on_cloud_run():
+        token = drive_scoped_token(verify=_has_drive_scope)
+        if token:
+            return token
+        token = adc_token()
+        return token if token and _has_drive_scope(token) else ""
     with ThreadPoolExecutor(2) as ex:
         tokens = [t for t in ex.map(lambda fetch: fetch(), (lambda: user_token(account), adc_token)) if t]
     if not tokens:
@@ -104,6 +121,26 @@ def drive_token(account: str = "") -> str:
     with ThreadPoolExecutor(len(tokens)) as ex:
         scoped = list(ex.map(_has_drive_scope, tokens))
     return next((t for t, ok in zip(tokens, scoped) if ok), "")
+
+
+def drive_failure_hint(error: Exception, account: str = "") -> str:
+    """What to fix when Drive publishing fails on Cloud Run, if the error points at it: a service account owns
+    no Drive storage (403 storageQuotaExceeded in a My Drive folder) and sees only what is shared with it
+    (403 insufficient permissions, 404 on the folder). '' locally and for other errors."""
+    if not on_cloud_run() or not _DRIVE_ACCESS_DENIED.search(str(error)):
+        return ""
+    sa = service_account_email() or account or "the service account"
+    return f"On Cloud Run the Drive folder must be in a shared drive with {sa} added as Content manager."
+
+
+def _no_drive_credential(account: str = "") -> str:
+    """Message for 'no credential with the Drive scope', naming the fix for the runtime."""
+    if on_cloud_run():
+        sa = service_account_email() or account or "the service account"
+        return ("no credential with the Drive scope: the service account could not get a Drive-scoped token; enable "
+                f"iamcredentials.googleapis.com and grant {sa} roles/iam.serviceAccountTokenCreator on itself "
+                "(./deploy.sh does both)")
+    return "no credential with the Drive scope; run `gcloud auth login --enable-gdrive-access`"
 
 
 def _checked_id(resp: requests.Response, what: str) -> str:
@@ -152,7 +189,9 @@ class ArtifactStore:
             try:
                 return self._publish_drive(project_name, files, state)
             except (PublishError, requests.RequestException) as e:
-                fallback = f"Drive publish failed ({e}); published to Cloud Storage instead."
+                hint = drive_failure_hint(e, self.s.gcloud_account)  # first: the UI shows only the first 400 chars
+                fallback = (f"Drive publish failed; published to Cloud Storage instead. {hint} Details: {e}" if hint
+                            else f"Drive publish failed ({e}); published to Cloud Storage instead.")
         try:
             out = self._publish_gcs(project_name, files, state)
         except (PublishError, requests.RequestException) as e:
@@ -206,7 +245,7 @@ class ArtifactStore:
         if not unchanged:
             token = drive_token(self.s.gcloud_account)
             if not token:
-                raise PublishError("no credential with the Drive scope; run `gcloud auth login --enable-gdrive-access`")
+                raise PublishError(_no_drive_credential(self.s.gcloud_account))
             headers = {"Authorization": f"Bearer {token}", "X-Goog-User-Project": self.s.project_id}
             folder = self._ensure_subfolder(project_name, headers, state)
             entries = {p: state.get(f"drive:{folder}/{os.path.basename(p)}", {}) for p in files}

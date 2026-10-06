@@ -3,7 +3,7 @@
 #
 #   ./deploy.sh --project YOUR_PROJECT_ID [--allow user:a@example.com,group:team@example.com]
 #               [--region us-central1] [--service gemini-mcp-studio] [--min-instances 1]
-#               [--bucket NAME] [--location global]
+#               [--bucket NAME] [--location global] [--drive-folder DRIVE_FOLDER_URL_OR_ID]
 #   ./deploy.sh --local --project YOUR_PROJECT_ID [--drive-folder DRIVE_FOLDER_URL_OR_ID] [--port 8502]
 #
 # Cloud Run: builds this folder into a container, runs it as its own service account behind IAP (only you and
@@ -67,11 +67,11 @@ step "Project: $PROJECT | bucket: gs://$BUCKET | location: $LOCATION | target: $
 gcloud config set project "$PROJECT" --quiet >/dev/null
 
 step "Enabling APIs"
-APIS="aiplatform.googleapis.com developerknowledge.googleapis.com storage.googleapis.com"
+# Drive, Slides and IAM Credentials always: Google Slides publishing works locally and on Cloud Run, where the
+# service account gets its Drive-scoped token from the metadata server or, failing that, the IAM Credentials API.
+APIS="aiplatform.googleapis.com developerknowledge.googleapis.com storage.googleapis.com drive.googleapis.com slides.googleapis.com iamcredentials.googleapis.com"
 if [ "$MODE" = "cloud-run" ]; then
   APIS="$APIS run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com iap.googleapis.com iam.googleapis.com"
-elif [ -n "$DRIVE" ]; then
-  APIS="$APIS drive.googleapis.com slides.googleapis.com"
 fi
 gcloud services enable $APIS --project "$PROJECT"
 
@@ -100,9 +100,9 @@ set_env DRIVE_FOLDER "$DRIVE"
 if [ "$MODE" = "cloud-run" ]; then
   NUMBER="$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')"
   SA="gemini-mcp-studio@${PROJECT}.iam.gserviceaccount.com"
-  [ -z "$DRIVE" ] || echo "Note: Drive publishing works only with --local; on Cloud Run artifacts go to gs://$BUCKET/."
+  echo "Google Slides on Cloud Run: put the Drive folder in a shared drive and add $SA as Content manager, then paste the folder link in the sidebar (or pass --drive-folder)."
 
-  step "Service account $SA (Vertex AI user, API consumer, objects in gs://$BUCKET only)"
+  step "Service account $SA (Vertex AI user, API consumer, objects in gs://$BUCKET only, token creator on itself)"
   gcloud iam service-accounts describe "$SA" --project "$PROJECT" >/dev/null 2>&1 \
     || gcloud iam service-accounts create gemini-mcp-studio --project "$PROJECT" \
          --display-name "Gemini + MCP Studio on Cloud Run"
@@ -112,6 +112,11 @@ if [ "$MODE" = "cloud-run" ]; then
   done
   retry gcloud storage buckets add-iam-policy-binding "gs://$BUCKET" --member "serviceAccount:$SA" \
     --role roles/storage.objectAdmin --quiet
+  # Lets the service account mint its own Drive-scoped token through the IAM Credentials API (Google Slides),
+  # the fallback when the metadata server does not hand out the Drive scope itself.
+  retry gcloud iam service-accounts add-iam-policy-binding "$SA" --member "serviceAccount:$SA" \
+    --role roles/iam.serviceAccountTokenCreator --project "$PROJECT" --condition None --quiet \
+    || echo "WARN: could not grant roles/iam.serviceAccountTokenCreator to $SA on itself; Google Slides may fall back to gs://$BUCKET/."
 
   step "Letting Cloud Build deploy from source (Cloud Run Builder on the default compute service account)"
   retry gcloud projects add-iam-policy-binding "$PROJECT" \
@@ -123,11 +128,12 @@ if [ "$MODE" = "cloud-run" ]; then
     >/dev/null 2>&1 || true
 
   step "Building and deploying $SERVICE to Cloud Run in $REGION (about 5 minutes the first time)"
+  ENV_VARS="GOOGLE_CLOUD_PROJECT=$PROJECT,GOOGLE_CLOUD_LOCATION=$LOCATION,GCS_BUCKET=$BUCKET${DRIVE:+,DRIVE_FOLDER=$DRIVE}"
   gcloud run deploy "$SERVICE" --source . --project "$PROJECT" --region "$REGION" \
     --service-account "$SA" --no-allow-unauthenticated --iap \
     --min-instances "$MIN_INSTANCES" --max-instances 1 --no-cpu-throttling --cpu 2 --memory 4Gi \
     --timeout 3600 --session-affinity --execution-environment gen2 \
-    --set-env-vars "GOOGLE_CLOUD_PROJECT=$PROJECT,GOOGLE_CLOUD_LOCATION=$LOCATION,GCS_BUCKET=$BUCKET" \
+    --set-env-vars "$ENV_VARS" \
     --quiet
 
   step "Access through IAP"

@@ -40,7 +40,7 @@ from engine.config import Settings, get_settings
 from engine.deck_generator import DECK_VERSION
 from engine.model_resolver import ModelResolver
 from engine.samples import SAMPLES
-from engine.usecase_synthesizer import RESULT_FILE, output_paths
+from engine.usecase_synthesizer import BUILD_GENERATION, RESULT_FILE, output_paths
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +105,8 @@ def saved_result(settings: Settings, customer: str) -> Optional[dict]:
 
 def staleness(settings: Settings, customer: str, ask: str, catalog: Optional[Dict[str, dict]] = None) -> str:
     """Why the saved project of `customer` cannot stand in for a build of `ask` ('' when it can): 'missing',
-    'different ask', 'unfinished', 'built in <mode> mode' or 'newer model in use for <tier>: <old> -> <new>'.
+    'different ask', 'unfinished', 'built in <mode> mode', 'built by studio generation <n>, now <m>' (a bumped
+    BUILD_GENERATION: every sample is rebuilt at the next start) or 'newer model in use for <tier>: <old> -> <new>'.
     A tier with no verified model right now (a quarantine) keeps the saved demo: a rebuild could not use it either."""
     res = saved_result(settings, customer)
     if res is None:
@@ -116,6 +117,9 @@ def staleness(settings: Settings, customer: str, ask: str, catalog: Optional[Dic
         return "unfinished"
     if res.get("mode") and res["mode"] != settings.mode:
         return f"built in {res['mode']} mode"
+    generation = int(res.get("generation") or 1)
+    if generation < BUILD_GENERATION:
+        return f"built by studio generation {generation}, now {BUILD_GENERATION}"
     cat = ModelResolver(settings).catalog() if catalog is None else catalog
     for tier, used in (res.get("models") or {}).items():
         model = used.get("model") if isinstance(used, dict) else used

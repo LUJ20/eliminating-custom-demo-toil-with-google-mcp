@@ -26,6 +26,18 @@ class DeployFilesTest(unittest.TestCase):
             self.assertIn(flag, script)
         self.assertNotIn("--allow-unauthenticated", script.replace("--no-allow-unauthenticated", ""))
 
+    def test_cloud_run_can_publish_to_google_slides(self):
+        script = _read("deploy.sh")
+        apis = next(line for line in script.splitlines() if line.startswith("APIS="))
+        for api in ("drive.googleapis.com", "slides.googleapis.com", "iamcredentials.googleapis.com"):
+            self.assertIn(api, apis)  # always on, not only with --drive-folder in local mode
+        self.assertIn('add-iam-policy-binding "$SA" --member "serviceAccount:$SA"', script)
+        self.assertIn("--role roles/iam.serviceAccountTokenCreator", script)
+        self.assertIn("Google Slides on Cloud Run: put the Drive folder in a shared drive and add $SA as Content manager, "
+                      "then paste the folder link in the sidebar (or pass --drive-folder).", script)
+        self.assertNotIn("works only with --local", script)
+        self.assertIn("DRIVE_FOLDER=$DRIVE", script)  # --drive-folder reaches the service
+
     def test_uploads_skip_secrets_and_local_state(self):
         for name in (".gcloudignore", ".dockerignore"):
             lines = {line.strip() for line in _read(name).splitlines()}
