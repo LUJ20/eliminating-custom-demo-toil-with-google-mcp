@@ -544,7 +544,7 @@ class UseCaseSynthesizer:
             "model_mode": self.s.mode,
             "models": _models(stages),
             "models_resolved_at": self.resolver.reg.get("refreshed_at"),
-            "models_note": ("Resolved from Google Developer Knowledge MCP docs and verified on Vertex AI by the studio. "
+            "models_note": ("Resolved from Google Developer Knowledge MCP docs and verified on Agent Platform (formerly Vertex AI) by the studio. "
                             "Override with MODEL_<TIER> env vars, or re-run the studio to pick up newer models."),
             "stages": [{**{k: s.get(k, "") for k in ("stage", "service", "api", "tier", "model", "location",
                                                      "description", "doc_url")},
@@ -587,7 +587,7 @@ class UseCaseSynthesizer:
 {feat_section}{dlv_section}
 ## Models
 Model IDs live in `usecase_config.json` (`models`), resolved in {self.s.mode} mode. They were found in
-Google Developer Knowledge MCP docs and verified on Vertex AI when this package was generated. To update, re-run
+Google Developer Knowledge MCP docs and verified on Agent Platform (formerly Vertex AI) when this package was generated. To update, re-run
 the studio or set `MODEL_<TIER>` (for example `MODEL_REASONING`).
 
 ## Run

@@ -43,7 +43,7 @@ PLAYBOOK: Dict[str, Tuple[str, List[str]]] = {  # diagnosis when no model is ava
     "api_disabled": ("A required Google API is disabled in the project.",
                      ["Run: gcloud services enable <api> --project <project>"]),
     "permission_denied": ("The signed-in account lacks a required IAM permission.",
-                          ["Grant the needed role (for Vertex AI: roles/aiplatform.user), then retry."]),
+                          ["Grant the needed role (for Agent Platform: roles/aiplatform.user), then retry."]),
     "bad_request": ("The request was rejected as invalid.",
                     ["The next model was tried; check the model page for supported features."]),
     "bad_output": ("The model's answer failed validation repeatedly.",
@@ -237,7 +237,7 @@ class Troubleshooter:
         kind = last["kind"]
         words = re.sub(r"[^A-Za-z0-9 ]+", " ", last["error"])[:140]
         try:
-            docs = self.mcp.search_documents(f"{'Vertex AI' if inc['tier'] else 'Google Cloud'} "
+            docs = self.mcp.search_documents(f"{'Agent Platform Vertex AI' if inc['tier'] else 'Google Cloud'} "
                                              f"{kind.replace('_', ' ')} error {words}")[:3]
         except (ApiError, requests.RequestException) as e:  # the playbook diagnosis still applies
             logger.info("diagnosis doc search failed: %s", e)

@@ -1,10 +1,10 @@
-"""Vertex AI media generation over REST: images (Gemini image or Imagen), video (Veo, long-running), speech
+"""Agent Platform (formerly Vertex AI) media generation over REST: images (Gemini image or Imagen), video (Veo, long-running), speech
 (Gemini-TTS), music (Lyria) and multi-turn chat.
 
 No model IDs live here: every function receives the model the Model Resolver chose. Each returns the media
 bytes and their MIME type. API errors raise VertexError; an answer without usable media (safety filter, empty
 answer, timeout) raises OutputError with the reason, so the Troubleshooter can re-prompt or switch model.
-Request shapes follow the official Vertex AI docs (Veo image-to-video, Gemini-TTS, Lyria 2 and Lyria 3).
+Request shapes follow the official Agent Platform docs (Veo image-to-video, Gemini-TTS, Lyria 2 and Lyria 3).
 """
 import base64
 import io

@@ -21,6 +21,8 @@ scanned forms"*. The studio returns:
 - **Scorecard**: acceptance tests, judge scores and a privacy audit of the package
 - **Chat**: ask questions or request changes ("add Korean", "shorten the video"), answered with doc citations
 
+Naming: Google renamed Vertex AI to **Gemini Enterprise Agent Platform** ("Agent Platform"), Vertex AI Search to Agent Search and Agent Engine to Agent Runtime (release notes, mid-2026). The studio uses the current names everywhere, including in saved builds; APIs, roles and endpoints (`aiplatform.googleapis.com`) are unchanged.
+
 Example presets cover enterprise search with citations, document processing, an analytics agent, a voice
 concierge and generative media. One sidebar picker, **Open a demo**, lists the samples and then your saved builds.
 **The samples are pre-built**: picking one opens a finished demo at once. They are
@@ -37,7 +39,7 @@ flowchart LR
     U["Use case"] --> O["Orchestrator (plain Python, fixed steps)"]
     O --> B["Gemini: plan, design, code, judge"]
     O --> K["Developer Knowledge MCP: official Google docs"]
-    O --> T["Google APIs: Vertex AI media models (Imagen, Veo, TTS, Lyria, Live), Cloud Storage, Drive + Slides"]
+    O --> T["Google APIs: Agent Platform media models (Imagen, Veo, TTS, Lyria, Live), Cloud Storage, Drive + Slides"]
     O --> E["Evals: acceptance tests, judges, output checks, privacy audit"]
     E --> P["Package: architecture, code, media, deck, scorecard"]
 ```
@@ -93,7 +95,7 @@ for that, once.
 | Bucket for packages and project backups | nothing: `YOUR_PROJECT_ID-gemini-mcp-studio` is created for you | `--bucket NAME` or `GCS_BUCKET` in `.env` |
 | Google Drive folder (decks as Google Slides, scripts as Google Docs) | paste the folder link in the app's sidebar | `--drive-folder <folder link or ID>` or `DRIVE_FOLDER` in `.env`. On Cloud Run the folder must be in a **shared drive** with the service account `<service>@<project>.iam.gserviceaccount.com` added as Content manager (a service account has no My Drive storage); without it, decks are published to the bucket as `.pptx`. One-time setup, signed in as the account that uses the app: Drive → **Shared drives** → **New** (a shared drive, not a My Drive folder: its link ends in `/folders/0A…`, a My Drive folder's in `/folders/1…`) → **Manage members** → add the service account as **Content manager** → copy the link from the address bar |
 | Cloud Run region, service name, instances kept warm | defaults `us-central1`, `gemini-mcp-studio`, `1` | `--region`, `--service`, `--min-instances`, or `CLOUD_RUN_REGION`, `CLOUD_RUN_SERVICE`, `CLOUD_RUN_MIN_INSTANCES` in `.env` |
-| Vertex AI location | default `global` | `--location` or `GOOGLE_CLOUD_LOCATION` in `.env` |
+| Agent Platform (model) location | default `global` | `--location` or `GOOGLE_CLOUD_LOCATION` in `.env` |
 | Local port | default `8502` | `--port` |
 | Eval thresholds, media limits, model policy | defaults | copy [.env.example](.env.example) to `.env` and edit; every knob is listed there with its default |
 
@@ -116,7 +118,7 @@ To remove the app: `gcloud run services delete gemini-mcp-studio --region us-cen
 ## Security
 
 - Private by default: IAP admits only the accounts you allow.
-- Runs as its own service account: Vertex AI User, Service Usage Consumer, and object access to one bucket.
+- Runs as its own service account: Agent Platform User (`roles/aiplatform.user`), Service Usage Consumer, and object access to one bucket.
 - `.env`, local projects and caches are never uploaded (see `.gcloudignore`).
 - Packages are scanned for secrets and personal data before they are published.
 
@@ -131,7 +133,7 @@ flowchart TB
     UI["Streamlit UI<br/>app.py"] --> O["Python orchestrators<br/>usecase_synthesizer.py · build_editor.py · deliverables.py<br/>(step order, retries, parallelism, cost caps)"]
     subgraph K["Knowledge: all Google developer docs"]
         MCP["Developer Knowledge MCP<br/>mcp_knowledge_client.py<br/>search_documents · get_documents"]
-        ANY["Any Google Cloud service can be in a demo<br/>BigQuery · Document AI · Vertex AI Search · Maps<br/>Firebase · Pub/Sub · Cloud Run · Spanner · ... (from the docs)"]
+        ANY["Any Google Cloud service can be in a demo<br/>BigQuery · Document AI · Agent Search · Maps<br/>Firebase · Pub/Sub · Cloud Run · Spanner · ... (from the docs)"]
         MCP --> ANY
     end
     subgraph B["Gemini brain"]
@@ -161,7 +163,7 @@ Two different lists, on purpose. **What a demo can use** is open: the planner pi
 | AI work a model the studio calls can do (answering, extraction, chat, retrieval, images, video, voice, music) | Designed, coded **and demonstrated live** on the real model, with its checks | Gemini extracts the fields of a synthetic claim; Veo renders the campaign clip |
 | A Google service doing non-AI work (BigQuery, Pub/Sub, Maps, Firestore, a Document AI processor) | Designed with its official doc, **real code** against that API in the package, and a **stand-in output** made by Gemini for the demo (table, JSON, agent trace, text), schema- and brief-checked | A BigQuery stage ships the SQL and client code; the demo shows the result table and a chart |
 | Something no model can stand in for (the customer's own data, a running deployed app, a capability with no tier) | Still in the architecture, docs and code; the demo output is a description or trace, and the scorecard shows it as not demonstrated | "Deploy to Cloud Run" ships the Dockerfile and command, not a live endpoint |
-| Questions over documents | One document up to 1,000 pages / 50 MB needs no index: Gemini reads it whole (each page as text and image, so charts and figures are answerable) behind a context cache. A corpus of many such documents is a **retrieval** design: the package code builds the index (Vertex AI Search data store or RAG Engine corpus: layout parser, chunking, embeddings; figures described at ingest so they are searchable) and asks Gemini with the retrieval tool; the demo chat answers from a synthetic slice of the corpus | Field-manual Q&A over 3,000 manuals: the package ships the data-store creation, the Cloud Storage import and the grounded chat; the demo answers from sample manual pages |
+| Questions over documents | One document up to 1,000 pages / 50 MB needs no index: Gemini reads it whole (each page as text and image, so charts and figures are answerable) behind a context cache. A corpus of many such documents is a **retrieval** design: the package code builds the index (Agent Search data store or RAG Engine corpus: layout parser, chunking, embeddings; figures described at ingest so they are searchable) and asks Gemini with the retrieval tool; the demo chat answers from a synthetic slice of the corpus | Field-manual Q&A over 3,000 manuals: the package ships the data-store creation, the Cloud Storage import and the grounded chat; the demo answers from sample manual pages |
 
 Nothing fails and the gap is visible. Extending the studio is additive: a new capability is a new tier in `model_resolver.py` (models are still discovered from the docs) plus a generator in `media.py`; executing demos for real against customer services is the optional sandbox-job / managed-MCP step in the production plan.
 
@@ -172,7 +174,7 @@ Nothing fails and the gap is visible. Extending the studio is additive: a new ca
 | **Knowledge (MCP)** | `engine/mcp_knowledge_client.py` | Queries Google Developer Knowledge MCP (`search_documents`, `get_documents`) so every service, model ID, feature, package, and citation is grounded in official docs. |
 | **Brain (Gemini)** | `engine/brain.py`, `engine/vertex.py` | Generates architecture plans, starter code, judge scores, QA verdicts, acceptance tests, and chat edit plans as validated JSON. |
 | **Model Resolver** | `engine/model_resolver.py` | Dynamically discovers, verifies, canary-tests, monitors, and rolls back models across 11 capability tiers (zero hardcoded model IDs). |
-| **Direct Tools** | `engine/media.py`, `engine/artifact_store.py`, `engine/project_sync.py` | Invokes Vertex AI media APIs, Cloud Storage, and Google Drive/Slides/Docs directly from Python. |
+| **Direct Tools** | `engine/media.py`, `engine/artifact_store.py`, `engine/project_sync.py` | Invokes Agent Platform media APIs, Cloud Storage, and Google Drive/Slides/Docs directly from Python. |
 
 
 ### 2. Directory & Module Layout
@@ -188,7 +190,7 @@ Gemini+MCP/
 │   ├── config.py                   # Settings, policy thresholds, and credential resolution (.env / gcloud / ADC)
 │   ├── common.py                   # Shared utilities: atomic locked JSON/JSONL I/O, retries, text helpers
 │   ├── mcp_knowledge_client.py     # HTTP/JSON-RPC client for Google Developer Knowledge MCP server
-│   ├── vertex.py                   # Vertex AI REST calls (generateContent, predict, embeddings, model probes)
+│   ├── vertex.py                   # Agent Platform REST calls (generateContent, predict, embeddings, model probes)
 │   ├── model_resolver.py           # Self-upgrading model discovery, verification, golden set, canary & rollback
 │   ├── troubleshooter.py           # Error classification, safe auto-remediation, model fallback, incident logs
 │   ├── brain.py                    # System prompts and JSON schema validators for planner, codegen, judge, director
@@ -197,7 +199,7 @@ Gemini+MCP/
 │   ├── prebuild.py                 # Pre-builds the samples; rebuilds them when a newer model is in use
 │   ├── manifest.py                 # Deliverables manifest schema, output kinds, tiers, and contracts
 │   ├── deliverables.py             # Background parallel deliverable generation and retry loop (chats: direct → play → check → replay)
-│   ├── media.py                    # Vertex AI media generators (Veo video, Imagen/Gemini image, TTS, Lyria music) and chat turns
+│   ├── media.py                    # Agent Platform media generators (Veo video, Imagen/Gemini image, TTS, Lyria music) and chat turns
 │   ├── media_qa.py                 # Per-deliverable quality checker, critic feedback, and best-attempt selector
 │   ├── charts.py                   # Splits a chat reply into markdown, code and ```chart CSV blocks the UI draws as line charts
 │   ├── acceptance.py               # End-to-end use-case acceptance test planner, runner, and evaluator
@@ -247,7 +249,7 @@ Typical wall time: about 3 minutes for a data/agent use case, 8–10 minutes whe
 
 #### 3.3 Self-Upgrading Model Resolver (`engine/model_resolver.py`)
 1. **Discover**: Scans Google Developer Knowledge MCP documentation for candidate model IDs across 11 tiers (`reasoning`, `fast`, `lite`, `live`, `image`, `image_fast`, `video`, `video_fast`, `music`, `speech`, `embedding`).
-2. **Verify**: Checks availability in Vertex AI Model Garden and runs a live probe call.
+2. **Verify**: Checks availability in Model Garden and runs a live probe call.
 3. **Gate (Golden Set & Canaries)**:
    - Text tiers run a 9-task role-based golden benchmark (must score $\ge 7/9$, match or beat current champion, and stay within $2\times$ latency).
    - Media and embedding tiers run modality-specific quality canaries.

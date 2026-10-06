@@ -4,7 +4,7 @@ Modules
   config                Settings and credentials (environment > .env > gcloud config > defaults)
   common                API errors, UTC time, locked JSON / JSONL files, text helpers
   mcp_knowledge_client  Google Developer Knowledge MCP client
-  vertex                Vertex AI REST calls and probes
+  vertex                Agent Platform (formerly Vertex AI) REST calls and probes
   model_resolver        Model Resolver sub-agent (discover, verify, canary, watch, roll back, features)
   troubleshooter        Troubleshooter agent (classify, fix, retry, diagnose)
   brain                 Planner, code generator and judge prompts and validators

@@ -2,7 +2,7 @@
 app in this same process.
 
 A new instance starts with no model registry, and resolving it (Developer Knowledge MCP discovery, verification on
-Vertex AI, golden set, feature pages) takes a few minutes. Starting at boot means the first visitor usually finds
+Agent Platform, golden set, feature pages) takes a few minutes. Starting at boot means the first visitor usually finds
 the models ready; one who comes sooner waits for this run instead of starting a second one (ModelResolver.refresh).
 Same process on purpose: the app shares this run's lock and registry. It also restores the saved projects from
 the bucket and backs them up every minute (engine/project_sync.py), so projects survive redeploys.

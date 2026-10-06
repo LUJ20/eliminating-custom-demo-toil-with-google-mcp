@@ -1,4 +1,4 @@
-"""Minimal Vertex AI REST helpers: generateContent, Model Garden lookup, call probe. No SDK, no model IDs."""
+"""Minimal Agent Platform (formerly Vertex AI; the service is still aiplatform.googleapis.com) REST helpers: generateContent, Model Garden lookup, call probe. No SDK, no model IDs."""
 import json
 import re
 import time
@@ -11,7 +11,7 @@ from engine.config import Settings, user_token
 
 
 class VertexError(ApiError):
-    """Non-200 answer from Vertex AI for `model`."""
+    """Non-200 answer from Agent Platform for `model`."""
 
     def __init__(self, status: int, message: str, model: str = "", reason: str = ""):
         super().__init__(status, message, reason)
@@ -51,7 +51,7 @@ def model_url(settings: Settings, model: str, location: str, method: str) -> str
 
 
 def post_json(settings: Settings, url: str, body: dict, model: str, timeout: int = 240) -> dict:
-    """POST a JSON body to a Vertex AI URL -> the JSON answer. Raises VertexError or requests exceptions."""
+    """POST a JSON body to an Agent Platform URL -> the JSON answer. Raises VertexError or requests exceptions."""
     resp = requests.post(url, headers=_headers(settings), json=body, timeout=timeout)
     if resp.status_code != 200:
         if resp.status_code == 401:

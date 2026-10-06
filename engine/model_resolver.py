@@ -1,7 +1,7 @@
 """Model Resolver sub-agent: keeps every model tier on the newest *verified* model. No model IDs in code.
 
   discover  Developer Knowledge MCP docs (release notes, the model-versions page, model pages) -> candidate IDs
-  verify    Vertex AI Model Garden lookup + a zero-cost call probe in the user's project -> where the model is
+  verify    Model Garden lookup (Agent Platform, formerly Vertex AI) + a zero-cost call probe in the user's project -> where the model is
             served, its launch stage, and that it still answers (retired models can stay listed but return 404)
   gate      text tiers run a golden-set canary: a newer model is promoted only if it scores at least as
             well as the current champion (first run: the newest candidate that passes). Other tiers run a
@@ -65,9 +65,9 @@ class Tier:
 
 
 TIERS: Dict[str, Tier] = {
-    "reasoning": Tier("Reasoning, planning, judging (Pro)", "latest Gemini Pro model ID Vertex AI",
+    "reasoning": Tier("Reasoning, planning, judging (Pro)", "latest Gemini Pro model ID Agent Platform Vertex AI",
                       (rf"gemini-{V}-pro{SUFFIX}",), text=True),
-    "fast": Tier("Fast generation, chat and code (Flash)", "latest Gemini Flash model ID Vertex AI",
+    "fast": Tier("Fast generation, chat and code (Flash)", "latest Gemini Flash model ID Agent Platform Vertex AI",
                  (rf"gemini-{V}-flash{SUFFIX}",), text=True),
     "lite": Tier("High volume, lowest cost (Flash-Lite)", "Gemini Flash-Lite model ID",
                  (rf"gemini-{V}-flash-lite{SUFFIX}",), text=True),
@@ -76,21 +76,21 @@ TIERS: Dict[str, Tier] = {
                  (rf"gemini-{V}(?:-flash)?(?:-lite)?-live(?:-preview)?{DATE}",
                   rf"gemini-{V}-flash-native-audio(?:-preview)?{DATE}",
                   rf"gemini-live-{V}-flash(?:-preview)?-native-audio{DATE}")),
-    "image": Tier("Image generation and editing, highest quality", "Gemini Pro image generation model ID Vertex AI",
+    "image": Tier("Image generation and editing, highest quality", "Gemini Pro image generation model ID Agent Platform Vertex AI",
                   (rf"gemini-{V}-pro-image(?:-preview)?", rf"imagen-{V}-ultra-generate-\d{{3}}",
                    rf"imagen-{V}-generate-\d{{3}}"), families=("gemini", "imagen")),
-    "image_fast": Tier("Image generation, fast and high volume", "Gemini Flash image generation model ID Vertex AI",
+    "image_fast": Tier("Image generation, fast and high volume", "Gemini Flash image generation model ID Agent Platform Vertex AI",
                        (rf"gemini-{V}-flash-image(?:-preview)?", rf"gemini-{V}-flash-lite-image(?:-preview)?",
                         rf"imagen-{V}-fast-generate-\d{{3}}"), families=("gemini", "imagen")),
-    "video": Tier("Video generation, highest quality (Veo)", "Veo video generation model ID Vertex AI",
+    "video": Tier("Video generation, highest quality (Veo)", "Veo video generation model ID Agent Platform Vertex AI",
                   (rf"veo-{V}-generate{VARIANT}",)),
     "video_fast": Tier("Video generation, fast and lower cost (Veo Fast / Lite)", "Veo fast video generation model ID",
                        (rf"veo-{V}-fast-generate{VARIANT}", rf"veo-{V}-lite-generate{VARIANT}")),
     "music": Tier("Music generation (Lyria)", "Lyria music generation model ID",
                   (rf"lyria-{V}(?:-pro)?(?:-preview)?",)),
-    "speech": Tier("Text-to-speech", "Gemini-TTS model ID text-to-speech Vertex AI",
+    "speech": Tier("Text-to-speech", "Gemini-TTS model ID text-to-speech Agent Platform Vertex AI",
                    (rf"gemini-{V}-(?:flash|pro)(?:-lite)?(?:-preview)?-tts(?:-preview)?",)),
-    "embedding": Tier("Embeddings", "Gemini embedding model ID Vertex AI",
+    "embedding": Tier("Embeddings", "Gemini embedding model ID Agent Platform Vertex AI",
                       (rf"gemini-embedding-{V}(?:-\d{{3}})?",)),
 }
 # Last-resort neighbour tier when every model of a tier fails, so a live demo keeps running.
@@ -103,8 +103,8 @@ ROLES = {"planner": "reasoning", "judge": "reasoning", "director": "reasoning", 
 # Rate limits (HTTP 429) are project quota / capacity, not model quality: the Troubleshooter still retries and
 # falls back per call, but they never roll a champion back.
 ENVIRONMENT_ERRORS = frozenset({"auth_expired", "network", "api_disabled", "permission_denied", "rate_limited"})
-RELEASE_NOTES_QUERY = "Vertex AI generative AI release notes new model available"
-VERSIONS_QUERY = "Gemini model versions and lifecycle retirement dates Vertex AI"
+RELEASE_NOTES_QUERY = "Agent Platform Vertex AI generative AI release notes new model available"
+VERSIONS_QUERY = "Gemini model versions and lifecycle retirement dates Agent Platform Vertex AI"
 TOKEN = re.compile(r"\b((?:gemini|veo|imagen|lyria)-[a-z0-9][a-z0-9.\-]*[a-z0-9])")
 ENTRY_KEYS = ("model", "location", "version", "ga", "rank", "launch_stage", "source")
 GONE = ("not served", "retired (listed, not callable)")
@@ -744,7 +744,7 @@ class ModelResolver:
                     "Developer Knowledge API enabled?); registry unchanged")
         counts = Counter(str(c.get("status") or "unknown") for lst in checked.values() for c in lst)
         found = ", ".join(f"{status} x{n}" for status, n in counts.most_common(3))
-        return f"no model could be verified on Vertex AI ({found or 'nothing checked'}); registry unchanged"
+        return f"no model could be verified on Agent Platform ({found or 'nothing checked'}); registry unchanged"
 
     def discover(self) -> Tuple[Dict[str, List[dict]], List[str]]:
         """Ask Developer Knowledge MCP for model IDs; classify them into tiers by naming convention."""
@@ -1203,7 +1203,7 @@ class ModelResolver:
         try:
             res = self.mcp.search_documents(f"{model} model capabilities features")
             pages = [r.get("parent") for r in res if r.get("parent") and model in (r.get("content") or "")]
-            # Vertex AI model pages first (the studio calls Vertex AI), then other official pages
+            # Agent Platform model pages first (their URLs still live under /vertex-ai/), then other official pages
             pages = sorted(dict.fromkeys(pages), key=lambda p: ("docs.cloud.google.com" not in p, "/models/" not in p))
             docs = [d for d in self.mcp.get_documents(pages[:2]) if d.get("content")]
         except (McpError, requests.RequestException) as e:  # retried after FEATURE_RETRY_AFTER
@@ -1229,7 +1229,7 @@ class ModelResolver:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Resolve the newest verified model per tier "
-                                             "(Developer Knowledge MCP + Vertex AI Model Garden).")
+                                             "(Developer Knowledge MCP + Model Garden).")
     ap.add_argument("--refresh", action="store_true", help="refresh if older than MODEL_REFRESH_HOURS")
     ap.add_argument("--force", action="store_true", help="refresh now")
     ap.add_argument("--features", action="store_true", help="re-read the documented features of the models in use")
