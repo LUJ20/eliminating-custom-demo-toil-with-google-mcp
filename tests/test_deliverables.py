@@ -245,13 +245,14 @@ class DeckTest(OfflineTestCase):
         text = " ".join(sh.text_frame.text for sl in prs.slides for sh in sl.shapes if sh.has_text_frame)
         cells = " ".join(c.text for sl in prs.slides for sh in sl.shapes if sh.has_table
                          for row in sh.table.rows for c in row.cells)
-        self.assertEqual(len(prs.slides), 5)
+        self.assertEqual(len(prs.slides), 4)  # cover, architecture, design considerations, applicability
         self.assertEqual(prs.core_properties.version, DECK_VERSION)
         self.assertEqual(deck_version(path), DECK_VERSION)
         self.assertEqual(deck_version(os.path.join(self.tmp, "missing.pptx")), "")
-        self.assertIn("61.5%", text)
-        self.assertIn("FAIL", cells)
-        self.assertIn("Lip-synced greeting", cells)
+        self.assertIn("BEST EFFORT; rubric 61.5%", prs.core_properties.keywords)  # the result travels with the file
+        self.assertIn("Lip-synced greeting", text)  # a demo output card on the architecture slide
+        self.assertIn("Cloud Run", text)
+        self.assertIn("Reliability", cells)  # the design considerations table
         self.assertNotIn("85%", text + cells)
         notes = " ".join(sl.notes_slide.notes_text_frame.text for sl in prs.slides if sl.has_notes_slide)
         self.assertIn("Cloud Run", notes)  # the architecture slide's talk track names the stage

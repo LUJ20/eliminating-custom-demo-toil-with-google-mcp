@@ -294,7 +294,7 @@ class DeckRefreshTest(OfflineTestCase):
         self.assertEqual([os.path.basename(folder)], prebuild.refresh_decks(self.settings, log=lambda m: None))
         self.assertEqual(DECK_VERSION, deck_version(deck))
         prs = pptx.Presentation(deck)
-        self.assertEqual(5, len(prs.slides))
+        self.assertEqual(4, len(prs.slides))
         text = " ".join(sh.text_frame.text for sl in prs.slides for sh in sl.shapes if sh.has_text_frame)
         self.assertIn("Cloud Run", text)
         self.assertEqual([], prebuild.refresh_decks(self.settings, log=lambda m: None))  # already current

@@ -102,7 +102,7 @@ TIERS: Dict[str, Tier] = {
 DEGRADE = {"reasoning": "fast", "fast": "reasoning", "lite": "fast", "image": "image_fast", "image_fast": "image",
            "video": "video_fast", "video_fast": "video"}
 ROLES = {"planner": "reasoning", "judge": "reasoning", "director": "reasoning", "codegen": "fast",
-         "troubleshooter": "fast", "qa": "reasoning", "editor": "reasoning"}
+         "troubleshooter": "fast", "qa": "reasoning", "editor": "reasoning", "transcriber": "fast"}
 # Failure kinds caused by the environment (credentials, network, project setup), not by the model. They say
 # nothing about a model's health, so the runtime watch ignores them.
 # Rate limits (HTTP 429) are project quota / capacity, not model quality: the Troubleshooter still retries and

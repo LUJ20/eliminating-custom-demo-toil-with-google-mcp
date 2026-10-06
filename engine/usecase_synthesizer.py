@@ -37,7 +37,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import requests
 
-from engine import acceptance, brain, deliverables as dlv, manifest, versions, well_architected as waf
+from engine import acceptance, bom as bom_mod, bom_template, brain, deliverables as dlv, manifest, versions, well_architected as waf
 from engine.common import doc_title, doc_url, file_lock, is_product_doc, redact, slugify
 from engine.config import Settings, get_settings
 from engine.deck_generator import build_usecase_deck
@@ -211,14 +211,16 @@ def output_paths(output_dir: str, slug: str) -> Tuple[str, str, str]:
     return final, os.path.join(final, f"{slug}_codebase.zip"), os.path.join(final, f"{slug}_architecture_deck.pptx")
 
 
-def render_deck(path: str, result: Dict[str, Any]) -> str:
-    """The architecture deck of a build result (also used by the build chat after an edit)."""
+def render_deck(path: str, result: Dict[str, Any], settings: Optional[Settings] = None) -> str:
+    """The reference architecture deck of a build result (also used by the build chat after an edit), on the Google
+    Cloud template when it is installed (engine/bom_template.py)."""
     return build_usecase_deck(
         path, customer=result["customer_name"], ask=result["usecase_ask"], summary=result["summary"],
         stages=result["stages"], rubric=result["eval_metrics"], attempts=result["attempt_stats"],
         files=result["package_files"], whats_new=result["whats_new"], mode=result["mode"],
         deliverables=result["deliverables"], score=result["score"], final_status=result["final_status"],
-        story=result.get("story") or {}, well_architected=result.get("well_architected"))
+        story=result.get("story") or {}, well_architected=result.get("well_architected"),
+        bom=result.get("bom"), template_path=bom_template.path(settings))
 
 
 def persisted(result: Dict[str, Any]) -> str:
@@ -287,6 +289,8 @@ class UseCaseSynthesizer:
                  if getattr(self.s, "acceptance_enabled", False) else None)
         reviews = (_DesignJobs(lambda bp: self.review_design(customer_name, usecase_ask, bp), "well-architected")
                    if getattr(self.s, "well_architected_enabled", True) else None)
+        boms = (_DesignJobs(lambda bp: self.write_bom(customer_name, usecase_ask, bp), "bom-writer")
+                if getattr(self.s, "bom_enabled", True) else None)
 
         def start_media(blueprint: dict) -> None:
             """Generate the demo output in the background as soon as a plan exists, so the slow clips overlap
@@ -311,6 +315,9 @@ class UseCaseSynthesizer:
             if reviews is not None and blueprint["stages"] and reviews.start(blueprint):
                 say(f"Well-Architected review: scoring this design against the five Framework pillars "
                     f"(Framework pages via MCP, {ROLES['judge']} tier) in the background")
+            if boms is not None and blueprint["stages"] and boms.start(blueprint):
+                say(f"Bill of materials: writing the reference architecture narrative, the demo script, the PoC "
+                    f"practices and the skills guide for this design ({ROLES['planner']} tier) in the background")
 
         try:
             for n in range(1, total + 1):
@@ -381,6 +388,11 @@ class UseCaseSynthesizer:
             review = reviews.result(best.blueprint)
             say(f"Well-Architected review: {review.get('verdict')}"
                 + (f" (average {review.get('average')}/5)" if review.get("status") == "done" else ""))
+        if boms is None:
+            bom = bom_mod.unavailable("the bill of materials is switched off (BOM_ASSETS=false)")
+        else:
+            bom = boms.result(best.blueprint) if stages else bom_mod.unavailable("the design has no stages")
+            say("Bill of materials: " + ("written" if bom_mod.done(bom) else f"not written ({bom.get('reason', '')})"))
         report = {"final_status": final_status, "model_mode": self.s.mode, "rubric": rubric,
                   "attempts": stats, "incidents": len(self.doctor.incidents)}
         if accepted is not None:
@@ -388,6 +400,9 @@ class UseCaseSynthesizer:
         extra_files = {"eval_report.json": json.dumps(report, indent=2)}
         if review is not None:
             extra_files[waf.REVIEW_FILE] = waf.to_markdown(review, customer_name)
+        extra_files[bom_mod.SKILL_FILE] = bom_mod.skill_markdown(
+            {"slug": slug, "customer_name": customer_name, "usecase_ask": usecase_ask, "summary": best.blueprint["summary"],
+             "stages": stages, "eval_metrics": rubric, "grounding_sources": grounding}, bom)
         files, audit = self.pii.sanitize_files({**best.files, **extra_files}, earlier=best.audit["redactions_applied"])
         code = files["pipeline.py"]
         whats_new = self._whats_new(stages, code)
@@ -408,8 +423,9 @@ class UseCaseSynthesizer:
             result["acceptance"] = accepted
         if review is not None:
             result["well_architected"] = review
-        say("Writing the codebase package and the architecture deck")
-        self._write_outputs(slug, files, lambda path: render_deck(path, result),
+        result["bom"] = bom
+        say("Writing the codebase package and the reference architecture deck")
+        self._write_outputs(slug, files, lambda path: render_deck(path, result, self.s),
                             extra={RESULT_FILE: persisted(result)})
         result["seconds"] = round(time.monotonic() - t_start, 1)
         return result
@@ -440,6 +456,17 @@ class UseCaseSynthesizer:
         except StepFailed as e:
             return waf.unavailable(f"the review did not complete: {redact(str(e))[:200]}")
         return {**rev, "model": served["model"]}
+
+    def write_bom(self, customer: str, ask: str, blueprint: dict) -> dict:
+        """The bill-of-materials narrative of a design (engine/bom.py): one planner-tier call, validated. Runs in a
+        worker thread during a build and from build_editor.add_bom for builds saved before the BOM existed. Never
+        raises: trouble is recorded as an incident and the documents say the narrative is missing."""
+        try:
+            out, served = self.doctor.run("BOM writer", ROLES["planner"], lambda m, loc, hint: bom_mod.write(
+                self.s, m, loc, hint, customer=customer, ask=ask, blueprint=blueprint))
+        except StepFailed as e:
+            return bom_mod.unavailable(f"the BOM writer did not complete: {redact(str(e))[:200]}")
+        return {**out, "model": served["model"]}
 
     def _prepare_models(self, say: Callable[[str], None]) -> None:
         """First use: resolve models now, or wait for the refresh already running. Read missing feature lists.

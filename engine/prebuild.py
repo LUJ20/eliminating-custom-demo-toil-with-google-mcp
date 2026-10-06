@@ -36,7 +36,8 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from typing import Any, Callable, Dict, Iterator, List, Optional
 
-from engine import config, project_sync
+from engine import config, deliverables as dlv, project_sync
+from engine.model_resolver import ROLES
 from engine.common import iso, read_json, redact, slugify, write_json
 from engine.config import Settings, get_settings
 from engine.deck_generator import DECK_VERSION
@@ -224,8 +225,6 @@ def refresh_reviews(settings: Settings, log: Callable[[str], None] = logger.info
     """Give every saved project built before the Well-Architected review existed (or whose review could not run)
     its review (build_editor.add_review: one MCP lookup and one reasoning-tier call per project, a few projects at
     a time). Never raises. -> the project slugs that got a review."""
-    if not getattr(settings, "well_architected_enabled", True):
-        return []
     try:
         from engine import build_editor  # heavy imports: only when it really runs
         from engine.usecase_synthesizer import UseCaseSynthesizer
@@ -236,8 +235,14 @@ def refresh_reviews(settings: Settings, log: Callable[[str], None] = logger.info
 
     def one(pd: str) -> Optional[str]:
         try:
-            return os.path.basename(pd) if build_editor.add_review(settings, build_editor.load_result(settings, pd),
-                                                                   synth) else None
+            res = build_editor.load_result(settings, pd)
+            added = build_editor.add_review(settings, res, synth)
+            added = build_editor.add_bom(settings, res, synth) or added  # also the BOM, for demos saved before it
+            measured = dlv.backfill_metrics(settings, pd, run=lambda label, role, fn: synth.doctor.run(
+                label, ROLES[role], lambda m, loc, hint: (fn(m, loc), 1.0))[0])  # the measured layer, same sweep
+            if measured:
+                log(f"{os.path.basename(pd)}: measured {measured} output(s) (market-standard metrics)")
+            return os.path.basename(pd) if added else None
         except Exception as e:  # one project's trouble never stops the sweep
             logger.warning("review of %s skipped: %s", os.path.basename(pd), redact(str(e))[:200])
             return None

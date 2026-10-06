@@ -40,7 +40,7 @@ import uuid
 import zipfile
 from typing import Any, Dict, List, Optional, Tuple
 
-from engine import acceptance, brain, code_editor, deliverables as dlv, manifest, versions, vertex, well_architected as waf
+from engine import acceptance, bom as bom_mod, brain, code_editor, deliverables as dlv, manifest, modality_eval, versions, vertex, well_architected as waf
 from engine.artifact_store import ArtifactStore
 from concurrent.futures import ThreadPoolExecutor
 
@@ -73,7 +73,7 @@ MAX_EDITS_LOG = 50
 RESTART_WAIT_S = 1800  # a superseded job finishes its current clip before it stops
 RESTART_POLL_S = 2.0
 CONFIG = "usecase_config.json"
-PACKAGE = (CONFIG, "pipeline.py", "requirements.txt", "README.md", "eval_report.json", waf.REVIEW_FILE)
+PACKAGE = (CONFIG, "pipeline.py", "requirements.txt", "README.md", "eval_report.json", waf.REVIEW_FILE, bom_mod.SKILL_FILE)
 SPEC_KEYS = ("id", "title", "kind", "tier", "brief", "start_from")
 SLUG_RE = re.compile(r"^[a-z0-9_]+$")
 MAX_DIFF_LINES = 30
@@ -157,7 +157,7 @@ def load_result(settings: Settings, project_dir: str) -> Dict[str, Any]:
     res = stored if isinstance(stored, dict) and stored.get("customer_name") else _derive(pd, cfg)
     for key, default in (("whats_new", []), ("incidents", []), ("grounding_sources", []), ("attempt_stats", []),
                          ("eval_metrics", []), ("stages", []), ("deliverables", []), ("models", {}),
-                         ("score", 0.0), ("seconds", 0), ("final_status", ""), ("mode", ""), ("story", {})):
+                         ("score", 0.0), ("seconds", 0), ("final_status", ""), ("mode", ""), ("story", {}), ("bom", {})):
         res.setdefault(key, default)
     res["summary"] = current_names(cfg.get("summary", res.get("summary", "")))
     for s in res["stages"]:  # builds saved before a product rename show the names the docs use today
@@ -212,7 +212,7 @@ def refresh_deck(settings: Settings, res: Dict[str, Any]) -> bool:
     with file_lock(os.path.join(settings.cache_dir, f"build_{os.path.basename(pd)}")):
         if _deck_current(path):  # another process or thread just did it
             return False
-        _write_binary(pd, path, lambda tmp: render_deck(tmp, res))
+        _write_binary(pd, path, lambda tmp: render_deck(tmp, res, settings))
     return True
 
 
@@ -266,11 +266,43 @@ def add_review(settings: Settings, res: Dict[str, Any], synth: Optional[UseCaseS
                 for name, content in sorted(files.items()):
                     zf.writestr(name, content)
         _write_binary(pd, result["zip_path"], zip_to)
-        _write_binary(pd, result["deck_path"], lambda tmp: render_deck(tmp, result))
+        _write_binary(pd, result["deck_path"], lambda tmp: render_deck(tmp, result, settings))
         write_text_atomic(os.path.join(pd, RESULT_FILE), persisted(result))
         versions.mark_saved(pd, versions.snapshot(pd, "Well-Architected review added"))
     res.update(well_architected=review, package_files=sorted(
         n for n in (*PACKAGE, AUDIT_FILE) if os.path.isfile(os.path.join(pd, n))))
+    return True
+
+
+def add_bom(settings: Settings, res: Dict[str, Any], synth: Optional[UseCaseSynthesizer] = None) -> bool:
+    """Give a finished build saved before the bill of materials existed (or whose BOM writer could not run) its BOM
+    narrative: one planner-tier call, then SKILL.md, the zip, the deck and RESULT_FILE are rewritten and recorded as
+    the saved version. A project with unsaved chat edits is left alone. -> True when the BOM was added."""
+    pd = res.get("project_dir") or ""
+    if not (getattr(settings, "bom_enabled", True) and pd and res.get("final_status") and res.get("stages")
+            and res.get("customer_name") and os.path.isdir(pd)) or bom_mod.done(res.get("bom")) or is_dirty(pd):
+        return False
+    synth = synth or UseCaseSynthesizer(settings)
+    blueprint = {"summary": res.get("summary", ""), "stages": res["stages"], "deliverables": res.get("deliverables") or [],
+                 "story": res.get("story") or {}}
+    bom = synth.write_bom(res["customer_name"], res.get("usecase_ask", ""), blueprint)
+    if not bom_mod.done(bom):
+        return False
+    with _editor_lock(pd), file_lock(os.path.join(settings.cache_dir, f"build_{os.path.basename(pd)}")):
+        result = {**res, "bom": bom}
+        text, _ = synth.pii.sanitize_text(bom_mod.skill_markdown(result, bom))
+        write_text_atomic(os.path.join(pd, bom_mod.SKILL_FILE), text)
+        files = {name: _read(pd, name) for name in PACKAGE if os.path.isfile(os.path.join(pd, name))}
+
+        def zip_to(tmp: str) -> None:
+            with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
+                for name, content in sorted(files.items()):
+                    zf.writestr(name, content)
+        _write_binary(pd, result["zip_path"], zip_to)
+        _write_binary(pd, result["deck_path"], lambda tmp: render_deck(tmp, result, settings))
+        write_text_atomic(os.path.join(pd, RESULT_FILE), persisted(result))
+        versions.mark_saved(pd, versions.snapshot(pd, "Bill of materials added"))
+    res.update(bom=bom, package_files=sorted(n for n in (*PACKAGE, AUDIT_FILE) if os.path.isfile(os.path.join(pd, n))))
     return True
 
 
@@ -306,6 +338,10 @@ def build_facts(result: dict, status: Optional[dict]) -> str:
     if quality:
         lines.append(f"- {quality['metric']} (live, not in the score): {quality['value']} "
                      f"({'pass' if quality['pass'] else 'FAIL'}) {_clean(quality['notes'], 260)}")
+    measured = modality_eval.metrics_row(status) if isinstance(status, dict) else None
+    if measured:
+        lines.append(f"- {measured['metric']} (live, not in the score): {measured['value']} "
+                     f"({'pass' if measured['pass'] else 'FAIL'}) {_clean(measured['notes'], 260)}")
     models = result.get("models") or {}
     if models:
         lines.append("Models in use (tier: model): " + "; ".join(f"{k}: {v}" for k, v in models.items()
@@ -795,7 +831,7 @@ def _apply(settings: Settings, synth: UseCaseSynthesizer, pd: str, current: dict
     if "deliverables" in changed:
         result["build_id"] = uuid.uuid4().hex
     with file_lock(os.path.join(settings.cache_dir, f"build_{os.path.basename(pd)}")):
-        _write_binary(pd, result["deck_path"], lambda tmp: render_deck(tmp, result))
+        _write_binary(pd, result["deck_path"], lambda tmp: render_deck(tmp, result, settings))
 
         def zip_to(tmp: str) -> None:
             with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:

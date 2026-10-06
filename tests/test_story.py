@@ -101,16 +101,21 @@ class DeliverablesStoryTest(OfflineTestCase):
 class DeckAndPackageStoryTest(OfflineTestCase):
     def test_deck_opens_with_the_story(self):
         ds = items()
+        stages = [{"stage": "1. Ingest", "service": "Cloud Run", "api": "run", "tier": "", "model": "",
+                   "description": "d", "features": []}]
         path = build_usecase_deck(os.path.join(self.tmp, "d.pptx"), customer="Cymbal Air", ask="ask", summary="sum",
-                                  stages=[], rubric=[], attempts=[], files=["pipeline.py"], whats_new=[],
+                                  stages=stages, rubric=[], attempts=[], files=["pipeline.py"], whats_new=[],
                                   mode="Showcase", deliverables=ds, score=90.0, final_status="PASSED", story=STORY)
         prs = pptx.Presentation(path)
-        self.assertEqual(len(prs.slides), 5)
-        first = " ".join(sh.text_frame.text for sh in prs.slides[0].shapes if sh.has_text_frame)
-        self.assertIn("The story: Aiko Makes Her Connection", first)
-        self.assertIn("Warm handoff", first)
-        self.assertIn("Rebooked in 3 minutes", first)
-        self.assertIn("Close: Rebooked", prs.slides[0].notes_slide.notes_text_frame.text)
+        self.assertEqual(len(prs.slides), 4)
+        cover = " ".join(sh.text_frame.text for sh in prs.slides[0].shapes if sh.has_text_frame)
+        self.assertIn("Cymbal Air", cover)
+        self.assertIn("Reference architecture", cover)
+        self.assertIn("The story: A cancelled flight becomes a calm rebooking in any language.",
+                      prs.slides[0].notes_slide.notes_text_frame.text)
+        arch = " ".join(sh.text_frame.text for sh in prs.slides[1].shapes if sh.has_text_frame)
+        self.assertIn("For Aiko, a Diamond member flying Atlanta to Tokyo", arch)  # the hero above the diagram
+        self.assertIn("Lip-synced greeting", arch)  # the story's clip as a demo-output card
 
     def test_story_accepted_needs_coverage_and_story(self):
         cov, story = brain.CRITERIA["deliverable_coverage"], brain.CRITERIA["storytelling"]

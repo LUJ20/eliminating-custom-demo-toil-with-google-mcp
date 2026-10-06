@@ -83,11 +83,12 @@ class OfflineTestCase(unittest.TestCase):
         # so this account is scrubbed exactly like a real one, and no real identity is committed to the repo.
         # acceptance_enabled=False: the end-to-end acceptance tests add model calls to every build; tests that
         # cover them turn them on explicitly (tests/test_acceptance.py). The same goes for the Well-Architected
-        # review (tests/test_well_architected.py).
+        # review (tests/test_well_architected.py) and the measured output metrics (tests/test_modality_eval.py).
         self.settings = Settings(project_id="demo-proj", project_number="123456789012", bucket="demo-bucket",
                                  gcloud_account="jane.tester@corp.test", cache_dir=os.path.join(self.tmp, "cache"),
                                  output_dir=os.path.join(self.tmp, "out"), acceptance_enabled=False,
-                                 well_architected_enabled=False)
+                                 well_architected_enabled=False, output_metrics=False, bom_enabled=False,
+                                 bom_template_path=os.path.join(self.tmp, "no-template.pptx"))  # no bucket fetch
         for target, effect in (("engine.config._gcloud", self._blocked),
                                ("requests.sessions.Session.request", self._blocked),
                                ("time.sleep", lambda *_: None)):
