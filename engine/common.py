@@ -145,7 +145,10 @@ def norm_words(text: str) -> str:
 
 
 def redact(text: str) -> str:
-    """Strip tokens and mask emails before logging, displaying or sending error text to a model."""
+    """Strip tokens and mask emails before logging, displaying or sending error text to a model. Service-account
+    addresses (*.gserviceaccount.com) are infrastructure names, not personal data, and stay readable: the Drive
+    hint on Cloud Run has to name the account to share the folder with."""
     text = re.sub(r"ya29\.[A-Za-z0-9._\-]+", "[token]", text or "")
     text = re.sub(r"(?i)bearer\s+[A-Za-z0-9._\-]+", "Bearer [token]", text)
-    return re.sub(r"([A-Za-z0-9])[A-Za-z0-9._%+-]*@([A-Za-z0-9.-]+\.[A-Za-z]{2,})", r"\1***@\2", text)
+    return re.sub(r"([A-Za-z0-9])[A-Za-z0-9._%+-]*@((?![A-Za-z0-9.-]*gserviceaccount\.com)[A-Za-z0-9.-]+\.[A-Za-z]{2,})",
+                  r"\1***@\2", text)

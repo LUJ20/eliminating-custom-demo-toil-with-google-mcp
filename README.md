@@ -15,13 +15,15 @@ scanned forms"*. The studio returns:
 - **Demo outputs**: videos, images, voice and music from Google's media models, or structured results, agent
   traces and chat demos (opened on a played, checked first reply, with charts) for non-media use cases
 - **Story**: a hero, a challenge and a payoff, plus a presenter script
-- **Deck**: five editable slides (story, architecture flow diagram, deliverables, scorecard, package) with the talk
-  track in the speaker notes; PowerPoint, or Google Slides when run locally with Drive
+- **Deck**: five editable slides (story, the same architecture flow as the app's diagram with the demo outputs
+  attached, deliverables, scorecard, package) with the talk track in the speaker notes; PowerPoint, or Google
+  Slides when a Drive folder is set (on Cloud Run: a shared-drive folder)
 - **Scorecard**: acceptance tests, judge scores and a privacy audit of the package
 - **Chat**: ask questions or request changes ("add Korean", "shorten the video"), answered with doc citations
 
 Example presets cover enterprise search with citations, document processing, an analytics agent, a voice
-concierge and generative media. **The samples are pre-built**: picking one opens a finished demo at once. They are
+concierge and generative media. One sidebar picker, **Open a demo**, lists the samples and then your saved builds.
+**The samples are pre-built**: picking one opens a finished demo at once. They are
 rebuilt in the background whenever the studio moves to a newer model, so they always show the models in use;
 change the sample text in any way and the studio builds that new ask instead (a "Rebuild from scratch" button
 rebuilds an unchanged one live). When only the slide layout changes, saved decks are redrawn from the stored
@@ -32,20 +34,22 @@ results in seconds, with no rebuild. Knobs: `PREBUILD_SAMPLES=false` turns this 
 
 ```mermaid
 flowchart LR
-    U["Use case"] --> O["Orchestrator"]
+    U["Use case"] --> O["Orchestrator (plain Python, fixed steps)"]
     O --> B["Gemini: plan, design, code, judge"]
     O --> K["Developer Knowledge MCP: official Google docs"]
-    O --> T["Google APIs: media models, Cloud Storage, Drive"]
-    O --> E["Evals: acceptance tests, judges, privacy audit"]
+    O --> T["Google APIs: Vertex AI media models (Imagen, Veo, TTS, Lyria, Live), Cloud Storage, Drive + Slides"]
+    O --> E["Evals: acceptance tests, judges, output checks, privacy audit"]
     E --> P["Package: architecture, code, media, deck, scorecard"]
 ```
+
+**MCP for knowledge, direct APIs for execution.** The MCP server supplies official docs (grounding, model discovery, citations); the orchestrator calls Google APIs itself; models come from the self-upgrading resolver. No agent framework runs the studio: the steps are fixed, so code decides, not the model. ADK appears only inside generated demos that need an agent (support agents, voice concierges).
 
 - **No hard-coded models**: the studio finds the newest models in Google's docs, verifies them in your project,
   tests them on a golden set and rolls back automatically if quality drops.
 - **Grounded**: every service, model and package comes with an official Google doc link.
 - **Checked**: every build is scored, and failing steps are retried.
 
-The full architecture (modules, workflows, the six eval layers, deployment) is in the [Architecture](#architecture) section at the end of this page.
+The full architecture (modules, workflows, every eval rule, deployment) is in the [Architecture](#architecture) section at the end of this page.
 
 ## Deploy in three steps
 
@@ -87,7 +91,7 @@ for that, once.
 | Google Cloud project | `--project YOUR_PROJECT_ID` | `GOOGLE_CLOUD_PROJECT` in `.env`, or your gcloud default project |
 | Who can open the app | `--allow user:a@example.com,group:team@example.com` | `IAP_ALLOW` in `.env` |
 | Bucket for packages and project backups | nothing: `YOUR_PROJECT_ID-gemini-mcp-studio` is created for you | `--bucket NAME` or `GCS_BUCKET` in `.env` |
-| Google Drive folder (decks as Google Slides, scripts as Google Docs) | paste the folder link in the app's sidebar | `--drive-folder <folder link or ID>` or `DRIVE_FOLDER` in `.env` (local runs) |
+| Google Drive folder (decks as Google Slides, scripts as Google Docs) | paste the folder link in the app's sidebar | `--drive-folder <folder link or ID>` or `DRIVE_FOLDER` in `.env`. On Cloud Run the folder must be in a **shared drive** with the service account `<service>@<project>.iam.gserviceaccount.com` added as Content manager (a service account has no My Drive storage); without it, decks are published to the bucket as `.pptx` |
 | Cloud Run region, service name, instances kept warm | defaults `us-central1`, `gemini-mcp-studio`, `1` | `--region`, `--service`, `--min-instances`, or `CLOUD_RUN_REGION`, `CLOUD_RUN_SERVICE`, `CLOUD_RUN_MIN_INSTANCES` in `.env` |
 | Vertex AI location | default `global` | `--location` or `GOOGLE_CLOUD_LOCATION` in `.env` |
 | Local port | default `8502` | `--port` |
@@ -123,16 +127,27 @@ To remove the app: `gcloud run services delete gemini-mcp-studio --region us-cen
 The codebase uses a **deterministic Python orchestrator** pattern (`Orchestrator → Gemini Brain + MCP Knowledge + Direct Google API Tools`) rather than an open-ended autonomous tool-calling loop:
 
 ```mermaid
-flowchart LR
-    UI["Streamlit UI (app.py)"] --> O["Python Orchestrators\n(usecase_synthesizer.py, build_editor.py, deliverables.py)"]
-    O -->|"search_documents, get_documents"| K["Developer Knowledge MCP\n(mcp_knowledge_client.py)"]
-    O -->|"newest verified model per tier"| R["Model Resolver\n(model_resolver.py)"]
-    K -->|"model IDs & features"| R
-    K -->|"official doc context"| B["Gemini Brain\n(brain.py, vertex.py)"]
-    R -->|"tier champions"| B
-    O -->|"plan, code, judge, check"| B
-    O -->|"direct REST / client calls"| T["Google APIs\n(Veo, Imagen, TTS, Lyria, Live, Embeddings, GCS, Drive)"]
-    O -->|"6-layer verification"| E["Evaluation & Safety\n(acceptance.py, media_qa.py, regression.py, pii_sanitizer.py)"]
+flowchart TB
+    UI["Streamlit UI<br/>app.py"] --> O["Python orchestrators<br/>usecase_synthesizer.py · build_editor.py · deliverables.py<br/>(step order, retries, parallelism, cost caps)"]
+    subgraph K["Knowledge"]
+        MCP["Developer Knowledge MCP<br/>mcp_knowledge_client.py<br/>search_documents · get_documents"]
+    end
+    subgraph B["Gemini brain"]
+        R["Model Resolver<br/>model_resolver.py<br/>newest verified model per tier"]
+        G["brain.py · vertex.py<br/>plan · code · judge · check"]
+        R --> G
+    end
+    subgraph T["Google API tools"]
+        API["media.py · artifact_store.py · project_sync.py<br/>Veo · Imagen · TTS · Lyria · Live · Embeddings<br/>Cloud Storage · Drive"]
+    end
+    subgraph E["Evaluation and safety"]
+        EV["acceptance.py · media_qa.py<br/>regression.py · pii_sanitizer.py"]
+    end
+    O --> MCP
+    O --> G
+    O --> API
+    O --> EV
+    MCP -. "model IDs, features, doc context" .-> R
 ```
 
 #### Design Responsibilities
@@ -149,7 +164,7 @@ flowchart LR
 
 ```text
 Gemini+MCP/
-├── app.py                          # Streamlit web UI (use-case input, pre-built samples, saved projects, 5 result sections, build chat)
+├── app.py                          # Streamlit web UI (use-case input, one Open-a-demo picker: pre-built samples + saved builds, 5 result sections, build chat)
 ├── deploy.sh                       # One-command Cloud Run + IAP deployment or local launch (--local)
 ├── Dockerfile                      # Container build definition (runs python -m engine.serve)
 ├── requirements.txt                # Runtime Python dependencies
@@ -203,15 +218,15 @@ Gemini+MCP/
 5. **Acceptance Tests Start Early**: At that same first plan, `acceptance.py` plans 3–6 use-case-specific tests and runs them (6 in parallel) in the background against the design's models, overlapping code generation and judging instead of running after them. A test run is keyed by the design (stages, services, features, story), so a retry that keeps the design reuses it.
 6. **Code Generation & Packaging**: Uses the `fast` tier to generate `pipeline.py` (with `--dry-run` support) while citations are attached in parallel, resolves dependencies via `DependencyResolver` (in parallel with the judge), and scans all files for secrets/PII with `PIISanitizer`.
 7. **Scorecard & Retry Loop**: Evaluates the build using 5 LLM judge rubric rows and 6–7 programmatic checks, retrying up to 3 attempts with critic feedback. A retry whose design passed every check keeps the whole blueprint and rewrites only the code, so generated media and running acceptance tests carry over; only a design-level failure re-plans.
-8. **Deck, Story & Publishing**: Generates the five-slide deck (`deck_generator.py`: story or overview, an editable architecture flow diagram, deliverables, proof, package; the talk track in the speaker notes; stamped with `DECK_VERSION`) and `.zip` archive in parallel, the presenter script (`story_doc.py`), then publishes artifacts via `ArtifactStore` to Google Drive or Cloud Storage.
+8. **Deck, Story & Publishing**: Generates the five-slide deck (`deck_generator.py`: story or overview, the architecture flow, deliverables, proof, package; the talk track in the speaker notes; stamped with `DECK_VERSION`) and `.zip` archive in parallel, the presenter script (`story_doc.py`), then publishes artifacts via `ArtifactStore` to Google Drive or Cloud Storage. The architecture slide is the same picture as the app's diagram (`app.py` `build_architecture_dot`): one row of stage boxes coloured by tier (two rows above six stages), a dashed "Demo output" group with one card per output attached to the last stage by dashed connectors, the outcome, and a "What each stage does" strip; every shape stays editable, and `slide_viewer.py` draws the connectors and dashed borders in the in-app player. On Cloud Run the service account publishes to Drive with a Drive-scoped token (metadata server, or IAM Credentials as a fallback), so Google Slides works there too when the folder is in a shared drive.
 
 Typical wall time: about 3 minutes for a data/agent use case, 8–10 minutes when the demo includes several video clips.
 
 #### 3.2 Pre-Built Samples (`engine/samples.py`, `engine/prebuild.py`)
 1. **One source of truth**: the 8 sidebar samples live in `samples.py`; `app.py` and the pre-builder read the same list.
 2. **Built ahead of time**: at start (local app or Cloud Run container, after the bucket restore and once models are resolved) every sample whose saved project is missing or stale is built as a normal build, `PREBUILD_PARALLEL` (default 4) at once, under a per-project lock so two triggers never build twice. Finished projects reach the bucket through `project_sync.py`.
-3. **Staleness rules**: a saved project stands in for an ask only when it is a finished build of exactly that customer and text (whitespace aside), in the same mode, on the models in use now. The Model Resolver's promotion hook (registered after the regression hook, so a rollback comes first) rebuilds the samples a newer model made stale.
-4. **In the UI**: picking a sample opens its pre-built demo instantly; submitting the unchanged text opens the saved demo (with a "Rebuild from scratch" button); any edit to the text builds fresh; a sample being pre-built right now is joined, not built twice.
+3. **Staleness rules**: a saved project stands in for an ask only when it is a finished build of exactly that customer and text (whitespace aside), in the same mode, on the models in use now, by the current studio generation (`BUILD_GENERATION` in `usecase_synthesizer.py`, stamped into every result: bump it when every sample should be rebuilt on the next start, for example after a new kind of deliverable). The Model Resolver's promotion hook (registered after the regression hook, so a rollback comes first) rebuilds the samples a newer model made stale.
+4. **In the UI**: one sidebar picker, "Open a demo", lists `Custom`, the 8 samples and then every other saved build (newest first; a saved build of a sample's exact ask is reached through the sample's entry, never listed twice). Picking a sample opens its pre-built demo instantly; a sample built on older models or in the other mode still opens, with the caption "Built on older models; Create Custom Demo rebuilds it."; a sample not built yet only fills the form; picking a saved build loads it with its scorecard, outputs, chat and versions; `Custom` clears the form. Submitting unchanged text opens the saved demo (with a "Rebuild from scratch" button); any edit to the text builds fresh; a sample being pre-built right now is joined, not built twice. The picker keeps its selection when a new build appears in the list (an `on_change` callback records the choice, so a widget reset never clears the form).
 5. **Deck refresh without a rebuild**: a change to the slides alone (a bumped `DECK_VERSION`) does not make a sample stale. At start, before the pre-build, and whenever a saved build is opened, `build_editor.refresh_deck` redraws any deck made by an older layout from the stored result (`.studio_result.json`): about half a second per project, no model call, under the same build lock as the synthesizer. `versions.py` treats the deck as derived, so a redrawn deck is never an "unsaved change". CLI: `python -m engine.prebuild --decks`.
 6. **Chat refresh without a rebuild**: after the pre-build, `prebuild.refresh_chats` sweeps every saved project whose chat demo has no played first reply (builds from before chats were played) and calls `deliverables.redirect`: the chat is directed again, its opener played and the reply checked, about a minute per project on the models in use. The deliverables folder is volatile for `versions.py`, so this is not an "unsaved change" either. CLI: `python -m engine.prebuild --chats`.
 
@@ -232,17 +247,95 @@ Typical wall time: about 3 minutes for a data/agent use case, 8–10 minutes whe
    - **Refusal**: Blocks out-of-policy requests (e.g., using unverified models, disabling security checks, exceeding cost caps) with a clear explanation.
 
 
-### 4. Six-Layer Evaluation System
+### 4. Evaluation: every rule, rubric and threshold
 
-| Layer | Module | Purpose & Pass Criteria |
+Every build, demo output, chat change and model upgrade is evaluated. Thresholds are environment variables (names in brackets); judges are Gemini models from the `reasoning` tier, and every rule with a programmatic check is enforced by code, not by a judge.
+
+#### 4.1 When evals run
+
+| Event | Evals |
+| :--- | :--- |
+| A build | Build scorecard (up to 3 attempts; a code-only retry keeps a passing design) · acceptance tests, started with the first valid plan and run alongside code generation and judging (6 at a time) · output checks on every demo output |
+| A sample pre-build (app start, model promotion) | The same evals as a build: the saved samples are real builds |
+| A chat message | Question: citation check. Change: validation → change check (code changes are also re-judged) |
+| Daily model refresh | Promotion canary for new models · drift check on current models |
+| Every model call | Runtime watch (errors, invalid outputs, failed output checks) |
+| After a model upgrade | Regression suite on the reference use cases, then the sample demos are rebuilt on the new models |
+| Before a release | Chat intent set (`scripts/eval_chat_intents.py`) · offline unit tests (`python -m unittest discover -s tests`) |
+
+#### 4.2 Build scorecard — is the design and code right? (`engine/brain.py`, `engine/usecase_synthesizer.py`)
+
+| Rule | Pass |
+| :--- | :--- |
+| R1 Judge rubric: requirement coverage · grounded in official docs · code implements the design · demo shows what was asked · demo tells a story | Judge score **4/5 or better** on each row [`EVAL_MIN_JUDGE_SCORE`] |
+| R2 Model currency | Every AI stage uses the newest verified model of its tier |
+| R3 Feature showcase (AI stages only) | The showcased model features are configured in the code |
+| R4 Doc citations | Every stage cites an official Google doc |
+| R5 Code validity | `pipeline.py` compiles and has a `--dry-run` entry point |
+| R6 Dependencies | Every import is documented in an official Google doc |
+| R7 Security / PII | 0 findings after redaction |
+| R8 Standard parameters | Project placeholder, location, models map; no model IDs in code |
+| R9 Use case works end to end | **80 % or more** of the acceptance tests pass and no safety failure [`ACCEPTANCE_MIN_PASS`] |
+
+**Score** = mean of the rows (judge rows as score/5, checks as 1 or 0). **PASSED** = every row passes. Otherwise up to 3 attempts [`EVAL_MAX_ATTEMPTS`] with the failed rows fed back as fixes; the best attempt is kept as **BEST EFFORT**.
+
+#### 4.3 Acceptance tests — does the use case actually work? (`engine/acceptance.py`)
+
+| Rule | Pass |
+| :--- | :--- |
+| A1 3–6 tests written from the ask, every requirement covered [`ACCEPTANCE_MAX_TESTS`] | Valid tests, each tied to a requirement and a stage |
+| A2 Each test runs on the build's own stage model | A valid output in the contract for its type |
+| A3 Checks by type: answer (facts, citations support the claims) · structured (schema) · agent (right tools, right order, nothing forbidden) · retrieval (expected source in the top 3) · classification (right label) · translation (language) · conversation and generation (facts) · all (safe, on task) | All critical checks pass |
+
+Acceptance tests run the **design** (stages + chosen models), not the generated code.
+
+#### 4.4 Demo outputs — is each output right? (`engine/media_qa.py`)
+
+| Output | Critical checks | Soft checks |
 | :--- | :--- | :--- |
-| **1. Build Scorecard** | `engine/brain.py`, `engine/usecase_synthesizer.py` | 5 LLM judge rubric rows ($\ge 4/5$ each) + 6–7 programmatic checks (grounding URLs, valid syntax, no PII, model compliance). |
-| **2. Acceptance Tests** | `engine/acceptance.py` | 3–6 end-to-end functional tests synthesized from the prompt and executed against the design's models ($\ge 80\%$ pass, 0 safety failures); they start at the first plan and run alongside code generation and judging. |
-| **3. Output QA** | `engine/media_qa.py` | Modality-specific checks on every generated video, image, audio, table, trace, or chat transcript (the played first reply must answer from its Context, never ask for data, and chart a trend); failed outputs regenerate with feedback, keeping the best attempt. |
-| **4. Chat Evals** | `engine/build_editor.py`, `scripts/eval_chat_intents.py` | Verifies doc citations support every answer, verifies requested build changes took effect, and benchmarks intent routing on 36 test cases. |
-| **5. Model Gates** | `engine/model_resolver.py` | 9-task golden set, media quality canaries, daily drift detection, and rolling 8-call runtime quality watch. |
-| **6. Regression Suite** | `engine/regression.py` | Rebuilds 4 reference use cases after a model upgrade; rolls back automatically if a build score drops $> 10$ points or a check regresses. |
+| Video | language, script, lip-sync, same person, brand safe, on-screen text | matches prompt, plays the scene |
+| Image | brand safe, on-screen text | matches prompt, plays the scene |
+| Speech | language, script, brand safe | plays the scene |
+| Music | brand safe | mood, plays the scene |
+| Text | written language, matches the brief, brand safe | plays the scene |
+| Chat (opener + played first reply) | written language, matches the brief (answers from its Context, never asks for data, charts a trend), brand safe | plays the scene |
+| Table / JSON result | schema valid, matches the brief, written language, brand safe | plays the scene |
+| Agent trace | schema valid, matches the brief, plausible steps, safe actions, brand safe | plays the scene |
 
+A critical failure regenerates the output with the findings, up to 2 more rounds [`MEDIA_RETRIES`], best kept (a chat is played again with the findings appended to its system instruction). The live **Demo output quality** row = all outputs pass their critical checks; in the UI each output shows one collapsed "Checks: n/m passed" line with the reviewer's summary.
+
+#### 4.5 Chat — is the answer or change right? (`engine/build_editor.py`)
+
+| Rule | Pass |
+| :--- | :--- |
+| C1 Questions are answered from build facts + official docs, with citations | Every citation number exists |
+| C2 Citation support | Each cited doc supports its sentence; otherwise one retry, then marked unverified |
+| C3 Changes are validated like a build | Valid manifest, no unverified models, under the media cap |
+| C4 Change check | "done / partly / not done" compared with the request, shown in the reply |
+| C5 Code changes | Re-validated, PII + dependencies re-scanned, re-judged, re-scored; diff shown |
+| C6 Refusals | Studio changes, unverified models, disabling security, over the cost cap |
+| C7 Intent test set (36 requests across all use-case types) | 90 % or more routed correctly as question / change / refusal |
+
+#### 4.6 Model upgrades — is a new model at least as good, and does it stay good? (`engine/model_resolver.py`, `engine/regression.py`)
+
+| Rule | Pass |
+| :--- | :--- |
+| M1 Found in official docs and callable in your project | Listed in Model Garden and a probe call answers |
+| M2 Text models: 9-task golden set by role (plan JSON, code, grounded answer, judge flags a defect, judge accepts good code, checker catches the wrong language, tool use, citation faithfulness, story plan); scored by code | **7 of 9 or better** and at least the current model's score; p50 latency at most 2× [`PROMOTE_MIN_SCORE`, `PROMOTE_MAX_LATENCY_RATIO`] |
+| M3 Embedding, image, video, speech, music models: quality canary, run only when a new model would replace the current one | Embedding: paraphrases closer than unrelated text (+0.05). Image / speech / music / video: a real sample of the right type and size; a bad sample is not retried for 72 h [`MEDIA_CANARY`, `MEDIA_CANARY_VIDEO`] |
+| M4 Daily drift check (text models) | At most 1 golden task lower than at promotion [`DRIFT_TOLERANCE`] |
+| M5 Runtime watch (all models) | Over the last 8 calls: error rate below 50 % and quality 0.6 or better, where failed output checks count as bad quality; credential, network, project-setup and rate-limit (429) errors are ignored [`ROLLBACK_*`] |
+| M6 Regression suite after an upgrade (4 reference use cases: voice/avatar, RAG search, agent + data, document extraction) | No case drops more than 10 points and no row that passed now fails [`REGRESSION_MAX_DROP`] |
+
+On failure the model is **held** (not promoted) or **rolled back** to the last known good one and **quarantined for 24 h** [`QUARANTINE_HOURS`]. If the older model fails the same task the same way, the newer one is restored (the task is at fault, not the model). If every regression build errors, the result is inconclusive and nothing is rolled back.
+
+#### 4.7 Rules that always apply, and known limits
+
+1. No hard-coded model IDs anywhere; models come from the resolver and generated code reads them from config.
+2. Environment failures (expired credentials, network, disabled API, permissions, rate limits) never count against a model.
+3. Every model change is logged with its reason and metrics.
+4. Model output is treated as untrusted: escaped in the UI, validated before use; generated code is checked, never executed (running it in an isolated Cloud Run job is the next step).
+5. Judges and checkers are AI models and can be wrong; the rules with a programmatic check are the most reliable. The Live API model is availability-checked and its latency recorded; there is no conversation canary yet.
 
 ### 5. Deployment & Persistence Architecture
 
@@ -253,4 +346,4 @@ Typical wall time: about 3 minutes for a data/agent use case, 8–10 minutes whe
   - `engine/serve.py` warms up the model registry in `.cache/` on startup, runs `engine/project_sync.py` in a background daemon thread to restore and back up `generated_projects/` to `gs://<bucket>/_projects/` every 60 seconds, and then starts `engine/prebuild.py` (after the restore and once models are resolved) so a fresh instance fills in whatever samples the bucket did not have, without waiting for a visitor; the same thread then redraws old decks and plays the first reply of any chat demo that has none.
 * **Knobs**: `PREBUILD_SAMPLES` (default `true`) turns the pre-build off; `PREBUILD_PARALLEL` (default 4) is how many samples build at once; `python -m engine.prebuild --status` reports which samples are current, `--force` rebuilds all, `--push` uploads them to the bucket, `--decks` only redraws the decks of saved projects for a new slide layout, `--chats` only re-directs and plays the chat demos that have no first reply yet.
 
-Offline unit tests: `python -m unittest discover -s tests` (351 tests, about 3 seconds, no cloud calls).
+Offline unit tests: `python -m unittest discover -s tests` (368 tests, about 3 seconds, no cloud calls).

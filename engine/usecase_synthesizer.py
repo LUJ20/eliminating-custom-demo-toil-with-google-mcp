@@ -50,6 +50,9 @@ from engine.troubleshooter import StepFailed, Troubleshooter
 logger = logging.getLogger(__name__)
 
 RESULT_FILE = ".studio_result.json"  # the build result, so the app can reload a project after an undo or restart
+# Stamped into every result. Bump it when every saved sample should be rebuilt on the next start (a new kind of
+# deliverable, a changed pipeline): prebuild.staleness() treats an older generation like an older model.
+BUILD_GENERATION = 2
 TRANSIENT_KEYS = ("project_dir", "zip_path", "deck_path", "code", "requirements")  # re-read from the folder
 MAX_GROUNDING_DOCS = 8
 MAX_DOC_LOOKUPS = 6
@@ -378,6 +381,7 @@ class UseCaseSynthesizer:
         result = {
             "build_id": build_id, "customer_name": customer_name, "usecase_ask": usecase_ask, "slug": slug,
             "summary": best.blueprint["summary"], "mode": self.s.mode, "stages": stages, "models": models,
+            "generation": BUILD_GENERATION,
             "deliverables": deliverables, "story": best.blueprint.get("story") or {},
             "grounding_sources": grounding, "whats_new": whats_new,
             "eval_metrics": rubric, "attempt_stats": stats, "final_status": final_status,

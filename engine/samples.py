@@ -1,5 +1,5 @@
 """The app's sample use cases: use cases only, no services or models. The planner picks the services, the Model
-Resolver the models. Shown in the sidebar's "Sample use cases" list and pre-built ahead of time (engine/prebuild.py),
+Resolver the models. Listed in the sidebar's "Open a demo" picker and pre-built ahead of time (engine/prebuild.py),
 so picking a sample opens a finished demo. Each sample's customer name is its project folder (slugified)."""
 
 SAMPLES = {

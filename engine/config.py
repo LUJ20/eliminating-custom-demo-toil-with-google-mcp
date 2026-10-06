@@ -6,6 +6,7 @@ listed, with defaults, in .env.example.
 """
 import dataclasses
 import json
+import logging
 import os
 import re
 import subprocess
@@ -13,11 +14,14 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from functools import lru_cache
-from typing import Dict, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple
+from urllib.parse import quote
 
 import requests
 
+logger = logging.getLogger(__name__)
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 PROJECT_ID_RE = re.compile(r"^(?:[a-z0-9.-]+:)?[a-z][a-z0-9-]{4,28}[a-z0-9]$")
 BUCKET_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{1,220}[a-z0-9]$")
@@ -27,6 +31,13 @@ TOKEN_FRESH_S = 5    # a token fetched this recently counts as fresh (parallel 4
 _TOKENS: Dict[str, Tuple[str, float]] = {}
 _TOKEN_LOCK = threading.Lock()
 METADATA_URL = "http://metadata.google.internal/computeMetadata/v1/"  # Cloud Run: the service account
+# Drive on Cloud Run: the service account's plain token carries only the cloud-platform scope, so a
+# Drive-scoped one is fetched separately (drive_scoped_token) and cached until shortly before it expires.
+DRIVE_SCOPE = "https://www.googleapis.com/auth/drive"
+IAM_CREDENTIALS_URL = "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/{sa}:generateAccessToken"
+TOKEN_EXPIRY_MARGIN_S = 300  # a scoped token is fetched again this long before it expires
+_SCOPED_TOKENS: Dict[str, Tuple[str, float]] = {}  # scope -> (token, time.monotonic() deadline to fetch again)
+_SCOPED_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -156,13 +167,29 @@ def _metadata(path: str) -> str:
         return ""
 
 
-def _metadata_token() -> str:
-    """Access token of the Cloud Run service account (cloud-platform scope; no Drive scope)."""
-    raw = _metadata("instance/service-accounts/default/token")
+def _token_document(raw: str) -> Tuple[str, float]:
+    """(access_token, expires_in seconds) from a metadata-server token document; ('', 0.0) if it is not one."""
     try:
-        return str(json.loads(raw).get("access_token") or "") if raw else ""
+        doc = json.loads(raw or "{}")
+        token = str(doc.get("access_token") or "")
     except (ValueError, AttributeError):
-        return ""
+        return "", 0.0
+    try:
+        return token, float(doc.get("expires_in") or 0)
+    except (TypeError, ValueError):
+        return token, 0.0
+
+
+def _metadata_token() -> str:
+    """Access token of the Cloud Run service account (cloud-platform scope only; for Drive see
+    drive_scoped_token)."""
+    return _token_document(_metadata("instance/service-accounts/default/token"))[0]
+
+
+def service_account_email() -> str:
+    """On Cloud Run: the e-mail of the service account the service runs as ('' elsewhere, or when the metadata
+    server does not answer)."""
+    return _metadata("instance/service-accounts/default/email") if on_cloud_run() else ""
 
 
 @lru_cache(maxsize=16)
@@ -228,7 +255,7 @@ def running_account() -> str:
     if explicit:
         return explicit
     if on_cloud_run():
-        return _metadata("instance/service-accounts/default/email")
+        return service_account_email()
     return _gcloud("config", "get-value", "account")
 
 
@@ -304,7 +331,77 @@ def user_token(account: str = "", fresh: bool = False) -> str:
 
 
 def adc_token() -> str:
-    """Application Default Credentials token (used for Drive when the gcloud user lacks the Drive scope)."""
+    """Application Default Credentials token (used for Drive when the gcloud user lacks the Drive scope).
+    On Cloud Run: the service account's plain token (cloud-platform scope only; see drive_scoped_token)."""
     if on_cloud_run():
         return _metadata_token()
     return _extract_clean_token(_gcloud("auth", "application-default", "print-access-token"))
+
+
+# ------------------------------------------------------------------------- Drive scope on Cloud Run
+def _seconds_until(stamp: str) -> float:
+    """Seconds from now until an RFC 3339 UTC timestamp such as 2026-10-05T20:38:42Z (fractions allowed);
+    0.0 when it cannot be read, so a token with an unreadable expiry is used once but not cached."""
+    try:
+        when = datetime.strptime(re.sub(r"\.\d+", "", stamp or "").replace("Z", "+0000"), "%Y-%m-%dT%H:%M:%S%z")
+    except ValueError:
+        return 0.0
+    return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
+
+
+def _metadata_scoped_token(scope: str) -> Tuple[str, float]:
+    """Token of the service account carrying `scope`, from the metadata server's token endpoint (Cloud Run
+    honours its `scopes` query parameter). -> (token, seconds it lives); ('', 0.0) on failure."""
+    return _token_document(_metadata(f"instance/service-accounts/default/token?scopes={scope}"))
+
+
+def _iam_scoped_token(scope: str) -> Tuple[str, float]:
+    """Token of the service account carrying `scope`, minted by the IAM Credentials API and authorised with
+    the plain metadata token. Needs iamcredentials.googleapis.com enabled and
+    roles/iam.serviceAccountTokenCreator granted to the service account on itself (deploy.sh does both).
+    -> (token, seconds it lives); ('', 0.0) on failure."""
+    sa, bearer = service_account_email(), _metadata_token()
+    if not sa or not bearer:
+        return "", 0.0
+    try:
+        r = requests.post(IAM_CREDENTIALS_URL.format(sa=quote(sa, safe="@")), timeout=15,
+                          headers={"Authorization": f"Bearer {bearer}"},
+                          json={"scope": [scope], "lifetime": "3600s"})
+    except requests.RequestException as e:
+        logger.warning("IAM Credentials API unreachable: %s", e)
+        return "", 0.0
+    if r.status_code != 200:
+        logger.warning("IAM Credentials API refused a token with scope %s for %s: HTTP %s %s. Enable "
+                       "iamcredentials.googleapis.com and grant roles/iam.serviceAccountTokenCreator on the service "
+                       "account to itself (./deploy.sh does both).",
+                       scope, sa, r.status_code, " ".join(r.text.split())[:200])
+        return "", 0.0
+    try:
+        doc = r.json()
+        return str(doc.get("accessToken") or ""), _seconds_until(str(doc.get("expireTime") or ""))
+    except (ValueError, AttributeError):
+        return "", 0.0
+
+
+def drive_scoped_token(verify: Optional[Callable[[str], bool]] = None) -> str:
+    """On Cloud Run: an access token of the service account that carries the Drive scope ('' elsewhere, or
+    when no source yields one). The plain metadata token has only the cloud-platform scope, so this one comes
+    from, in order: the metadata server's token endpoint asked for the Drive scope, then the IAM Credentials
+    API minting one. `verify(token)` is the caller's scope check (tokeninfo); a candidate failing it is
+    skipped. Cached until TOKEN_EXPIRY_MARGIN_S before it expires; a miss is not cached, so the next call tries
+    again. Thread-safe like user_token: parallel callers wait for one fetch instead of each starting their own."""
+    if not on_cloud_run():
+        return ""
+    with _SCOPED_LOCK:
+        tok, deadline = _SCOPED_TOKENS.get(DRIVE_SCOPE, ("", 0.0))
+        if tok and time.monotonic() < deadline:
+            return tok
+        for source in (_metadata_scoped_token, _iam_scoped_token):
+            tok, ttl = source(DRIVE_SCOPE)
+            if tok and (verify is None or verify(tok)):
+                _SCOPED_TOKENS[DRIVE_SCOPE] = (tok, time.monotonic() + max(ttl - TOKEN_EXPIRY_MARGIN_S, 0.0))
+                return tok
+            logger.info("Drive-scoped token from %s: %s", source.__name__.strip("_"),
+                        "lacks the Drive scope" if tok else "not available")
+        _SCOPED_TOKENS.pop(DRIVE_SCOPE, None)
+        return ""

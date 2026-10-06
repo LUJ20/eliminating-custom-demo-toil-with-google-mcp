@@ -30,7 +30,8 @@ from engine import media
 from engine import story_doc
 from engine.artifact_store import ArtifactStore
 from engine.common import redact
-from engine.config import Settings, default_bucket, drive_folder_id, get_settings, valid_bucket, valid_project_id
+from engine.config import (Settings, default_bucket, drive_folder_id, get_settings, on_cloud_run, valid_bucket,
+                           valid_project_id)
 from engine.manifest import DATA_KINDS, MEDIA_KINDS, kind_label
 from engine.mcp_knowledge_client import McpKnowledgeClient
 from engine.model_resolver import ROLES, ModelResolver
@@ -833,6 +834,18 @@ def ensure_published(res: dict, settings: Settings) -> tuple:
     return pub or {}, story_file, story_html, dirty
 
 
+def slides_hint(settings: Settings) -> str:
+    """How to get the deck as a Google Slides file (shown while there is no 'Open in Google Slides' button): a Drive
+    folder, which on Cloud Run must be in a shared drive the service account running the app can write to."""
+    shared = ""
+    if on_cloud_run():  # settings.gcloud_account is the service account email there (config.running_account)
+        shared = (f" On Cloud Run the folder must be in a shared drive with "
+                  f"{settings.gcloud_account or 'the service account'} added as Content manager.")
+    if not settings.use_drive:
+        return "To open the deck in Google Slides, paste a Drive folder link in the sidebar." + shared
+    return shared.strip()  # a Drive folder is set but the deck did not reach Slides: on Cloud Run, this is why
+
+
 def render_downloads(res: dict, settings: Settings, pub: dict, story_file: str, story_html: str, dirty: bool) -> None:
     st.subheader("5. Story script and architecture deck")
     if dirty and not pub:
@@ -860,8 +873,9 @@ def render_downloads(res: dict, settings: Settings, pub: dict, story_file: str, 
         elif pub.get("console_url") and not pub.get("error"):
             st.link_button("Open in Google Drive" if pub.get("mode") == "drive" else "Open in Cloud Storage",
                            pub["console_url"], width="stretch")
-    if not settings.use_drive:
-        st.caption("Add a Google Drive folder in the sidebar to get the deck as an editable Google Slides file.")
+    hint = slides_hint(settings) if not slides_url and (pub or not dirty) else ""  # unpublished dirty: info above
+    if hint:
+        st.caption(hint)
     st.iframe(render_presentation_player(res["deck_path"], gslides_url=slides_url or None, height=520), height=520)
 
 
@@ -1009,9 +1023,38 @@ def leave_guard(dirty: bool) -> None:
     st.iframe(f"<script>window.parent.onbeforeunload = {handler};</script>", height=1)  # app-made HTML only
 
 
+def fill_form(customer: str, ask: str, sample: str = "Custom") -> None:
+    """Show these values in the use-case form (and this entry in the 'Open a demo' picker) on the next run: widget
+    state can only be set before the widgets draw, so the fill is queued and applied at the top of the sidebar."""
+    st.session_state["form_fill"] = (str(customer or ""), str(ask or ""), sample)
+
+
+def build_label(customer, folder: str) -> str:
+    """The picker entry of a saved build that is not a sample: 'customer (folder)'."""
+    return f"{str(customer or folder)[:80]} ({folder})"
+
+
+def preset_for(res: dict) -> str:
+    """The sample label whose customer and ask this build is (whitespace aside), else ''."""
+    def norm(text) -> str:
+        return " ".join(str(text or "").split())
+    for label, p in PRESETS.items():
+        if p["customer"] == res.get("customer_name") and norm(p["ask"]) == norm(res.get("usecase_ask")):
+            return label
+    return ""
+
+
+def sample_for(res: dict) -> str:
+    """The picker entry of this build: its sample label, else its saved-build label (build_label), so a reopened
+    build re-selects its own entry."""
+    return preset_for(res) or build_label(res.get("customer_name"),
+                                          res.get("slug") or os.path.basename(res.get("project_dir") or ""))
+
+
 def saved_projects(settings: Settings) -> list:
-    """Built projects in the output folder -> [(label, project_dir)], newest first. Only folders with a stored
-    build result are listed; the label is the customer name (escaped when shown) and the folder name."""
+    """Built projects in the output folder, newest first -> [{label, dir, customer, ask, sample}]. Only folders
+    with a stored build result are listed; `label` is build_label (the customer name and the folder name) and
+    `sample` the sample label whose customer and ask the build is ('' for a custom build)."""
     root = settings.output_dir
     if not os.path.isdir(root):
         return []
@@ -1023,11 +1066,50 @@ def saved_projects(settings: Settings) -> list:
             continue
         try:
             with open(path, "r", encoding="utf-8") as f:
-                customer = str((json.load(f) or {}).get("customer_name") or name)[:80]
+                res = json.load(f)
         except (OSError, ValueError):
             continue
-        out.append((os.path.getmtime(path), f"{customer} ({name})", pd))
-    return [(label, pd) for _, label, pd in sorted(out, reverse=True)]
+        res = res if isinstance(res, dict) else {}
+        out.append((os.path.getmtime(path), name, {
+            "label": build_label(res.get("customer_name"), name), "dir": pd,
+            "customer": str(res.get("customer_name") or ""), "ask": str(res.get("usecase_ask") or ""),
+            "sample": preset_for(res)}))
+    return [p for _, _, p in sorted(out, key=lambda t: (t[0], t[1]), reverse=True)]
+
+
+def demo_entries(settings: Settings) -> tuple:
+    """The 'Open a demo' entries -> (options, {label: saved project}): 'Custom', the samples (pre-built), then the
+    saved builds that are not samples, newest first. A build whose customer and ask are a sample's opens through
+    its sample label, so it is not listed twice."""
+    saved = {p["label"]: p for p in saved_projects(settings) if not p["sample"]}
+    return ["Custom", *PRESETS, *saved], saved
+
+
+def demo_picked() -> None:
+    """on_change of the 'Open a demo' picker: remember the choice before the script body runs (callbacks run
+    first) and have the body apply it once. Comparing the widget's value with the last choice would not do: when
+    the options change (a new build appears) Streamlit resets the widget, and its session_state entry, to the
+    default, which would wrongly clear the form."""
+    st.session_state["form_sample"] = st.session_state["sample_pick"]
+    st.session_state["demo_picked"] = True
+
+
+def open_project(settings: Settings, project_dir: str) -> bool:
+    """Show the finished build in `project_dir`, unless another build with unsaved chat changes is open (then say
+    so; the caller tries again on the next run). -> True when it is the open build."""
+    shown = st.session_state.get("solution_result") or {}
+    if shown.get("project_dir") == project_dir:
+        return True
+    if shown.get("project_dir") and build_editor.is_dirty(shown["project_dir"]):
+        st.warning("The open build has unsaved chat changes; save or discard them to open this one.")
+        return False
+    try:
+        st.session_state["solution_result"] = build_editor.load_result(settings, project_dir)
+    except Exception as e:  # UI boundary: a broken project folder must not take the sidebar down
+        logger.exception("could not open %s", project_dir)
+        st.error(f"Could not open this build: {redact(str(e))[:200]}")
+        return False
+    return True
 
 
 def unsaved_drafts(settings: Settings) -> list:
@@ -1077,58 +1159,47 @@ if bucket and not valid_bucket(bucket):
 settings = base.for_project(project_id, bucket=bucket or default_bucket(project_id),
                             drive_folder_id=drive_folder_id(drive_link), allow_preview=(mode == MODES[0]))
 
-def fill_form(customer: str, ask: str, sample: str = "Custom") -> None:
-    """Show these values in the use-case form (and this sample in the dropdown) on the next run: widget state can
-    only be set before the widgets draw, so the fill is queued and applied at the top of the sidebar."""
-    st.session_state["form_fill"] = (str(customer or ""), str(ask or ""), sample)
-
-
-def sample_for(res: dict) -> str:
-    """The sample label whose customer and ask this build is (whitespace aside), else "Custom"."""
-    def norm(text) -> str:
-        return " ".join(str(text or "").split())
-    for label, p in PRESETS.items():
-        if p["customer"] == res.get("customer_name") and norm(p["ask"]) == norm(res.get("usecase_ask")):
-            return label
-    return "Custom"
-
-
 with st.sidebar:
     if drive_link and not settings.drive_folder_id:
         st.warning("Could not read a folder ID from that link.")
 
     st.markdown("---")
-    st.subheader("Sample use cases")
+    options, saved = demo_entries(settings)
     fill = st.session_state.pop("form_fill", None)
-    if fill:
-        st.session_state["form_customer"], st.session_state["form_ask"], st.session_state["sample_pick"] = fill
-        st.session_state["form_sample"] = fill[2]
-    selected_preset = st.selectbox("Choose a sample:", ["Custom"] + list(PRESETS), key="sample_pick")
-    if selected_preset != st.session_state.get("form_sample"):  # the choice changed: the form shows that sample
-        st.session_state["form_sample"] = selected_preset
-        chosen = PRESETS.get(selected_preset)
-        st.session_state["form_customer"] = chosen["customer"] if chosen else ""
-        st.session_state["form_ask"] = chosen["ask"] if chosen else ""
-    if selected_preset == "Custom":
-        st.session_state.pop("sample_shown", None)
-    else:
-        sample = PRESETS[selected_preset]
-        ready = prebuild.current(settings, sample["customer"], sample["ask"])
-        if ready:
-            st.caption("Pre-built demo ready: it opens below. Change the text to build a new one.")
-            if st.session_state.get("sample_shown") != selected_preset:
-                shown = st.session_state.get("solution_result") or {}
-                if shown.get("project_dir") and shown["project_dir"] != ready \
-                        and build_editor.is_dirty(shown["project_dir"]):
-                    st.caption("The open build has unsaved chat changes; save or discard them to open the sample.")
-                else:
-                    if shown.get("project_dir") != ready:
-                        st.session_state["solution_result"] = build_editor.load_result(settings, ready)
-                    st.session_state["sample_shown"] = selected_preset
+    if fill:  # queued by fill_form: the form widgets draw later in this run, so their state can still be set here
+        st.session_state["form_customer"], st.session_state["form_ask"], st.session_state["form_sample"] = fill
+    choice = st.session_state.setdefault("form_sample", "Custom")
+    if choice in options:  # re-assert it before the draw, every run: when the options change (a new build appears)
+        st.session_state["sample_pick"] = choice  # Streamlit resets the widget, and its state, to the default
+    picked = st.selectbox("Open a demo", options, key="sample_pick", on_change=demo_picked)
+    st.caption("Samples are pre-built; your saved builds are listed below them, newest first. Change the text to "
+               "build something new.")
+    if choice not in options:  # its folder is gone: follow the widget without touching the form text
+        st.session_state["form_sample"] = choice = picked
+    if st.session_state.pop("demo_picked", False):  # a new choice: the form shows its customer and ask
+        entry = PRESETS.get(choice) or saved.get(choice) or {"customer": "", "ask": ""}
+        st.session_state["form_customer"], st.session_state["form_ask"] = entry["customer"], entry["ask"]
+    target = ""  # the finished project this entry opens, if there is one
+    if choice in PRESETS:
+        sample = PRESETS[choice]
+        if prebuild.current(settings, sample["customer"], sample["ask"]):
+            target = prebuild.project_dir(settings, sample["customer"])
+            st.caption("Pre-built demo ready: it opens below.")
         elif prebuild.building(sample["customer"]):
             st.caption("This sample is being pre-built right now; Create Custom Demo joins that build.")
         else:
-            st.caption("No pre-built demo for this sample on the current models yet; Create Custom Demo builds it.")
+            stored = prebuild.saved_result(settings, sample["customer"]) or {}
+            if stored.get("final_status") and preset_for(stored) == choice:  # finished, but stale: older models
+                target = prebuild.project_dir(settings, sample["customer"])  # or the other mode; still worth a look
+                st.caption("Built on older models; Create Custom Demo rebuilds it.")
+            else:
+                st.caption("No pre-built demo for this sample on the current models yet; Create Custom Demo builds it.")
+    elif choice in saved:
+        target = saved[choice]["dir"]
+    if not target:
+        st.session_state.pop("demo_shown", None)
+    elif st.session_state.get("demo_shown") != choice and open_project(settings, target):
+        st.session_state["demo_shown"] = choice  # opened once per choice: later reruns leave the open build alone
 
 resolver = ModelResolver(settings)
 if resolver.is_empty():
@@ -1221,23 +1292,6 @@ if reused and (st.session_state.get("solution_result") or {}).get("project_dir")
             st.rerun()
 
 with st.sidebar:
-    projects = saved_projects(settings)
-    if projects:
-        st.markdown("---")
-        st.subheader("Saved projects")
-        labels = [label for label, _ in projects]
-        pick = st.selectbox("Open a built demo", labels, index=None, placeholder="Choose a project",
-                            key="saved_project_pick")
-        if pick and st.button("Open", key="open_saved_project", width="stretch"):
-            target = dict(projects)[pick]
-            current = st.session_state.get("solution_result") or {}
-            if current.get("project_dir") and build_editor.is_dirty(current["project_dir"]) \
-                    and current["project_dir"] != target:
-                st.warning("The open build has unsaved chat changes; save or discard them first.")
-            else:
-                st.session_state["solution_result"] = opened = build_editor.load_result(settings, target)
-                fill_form(opened.get("customer_name"), opened.get("usecase_ask"), sample_for(opened))
-                st.rerun()
     drafts = unsaved_drafts(settings)
     if drafts:
         st.markdown("---")
