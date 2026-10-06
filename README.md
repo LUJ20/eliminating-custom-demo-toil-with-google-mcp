@@ -143,6 +143,7 @@ To remove the app: `gcloud run services delete gemini-mcp-studio --region us-cen
 - Runs as its own service account: Agent Platform User (`roles/aiplatform.user`), Service Usage Consumer, and object access to one bucket.
 - `.env`, local projects and caches are never uploaded (see `.gcloudignore`).
 - Packages are scanned for secrets and personal data before they are published.
+- No WAF in the path by default: IAP sits directly on the Cloud Run service (no load balancer), which is enough for an allow-listed internal tool. For a public or regulated deployment add [Cloud Armor](https://docs.cloud.google.com/armor/docs/cloud-armor-overview) (Google Cloud's WAF: OWASP preconfigured rules, rate limiting, geo and IP rules): put an external Application Load Balancer with a [serverless NEG](https://docs.cloud.google.com/load-balancing/docs/https/setup-global-ext-https-serverless) in front of the service, attach a [security policy](https://docs.cloud.google.com/armor/docs/configure-security-policies) to its backend, move IAP onto that backend, and set the service ingress to `internal-and-cloud-load-balancing` so the run.app URL stops accepting traffic.
 
 ## Architecture
 
