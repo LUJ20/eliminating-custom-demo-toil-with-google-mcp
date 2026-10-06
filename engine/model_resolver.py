@@ -1,6 +1,11 @@
 """Model Resolver sub-agent: keeps every model tier on the newest *verified* model. No model IDs in code.
 
   discover  Developer Knowledge MCP docs (release notes, the model-versions page, model pages) -> candidate IDs
+  lifecycle the model-versions (lifecycle) page and the Gemini API deprecations page -> listed retirement date
+            per model. A model with a firm retirement date within RETIRE_WITHIN_DAYS (default 180) is not
+            used while the tier has another verified model: a demo handed over today should not name a model
+            that is gone in six months. Floors ("or later", "no sooner than") and "no date announced" do not
+            count but are shown
   verify    Model Garden lookup (Agent Platform, formerly Vertex AI) + a zero-cost call probe in the user's project -> where the model is
             served, its launch stage, and that it still answers (retired models can stay listed but return 404)
   gate      text tiers run a golden-set canary: a newer model is promoted only if it scores at least as
@@ -36,7 +41,7 @@ import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import date, timedelta
 from typing import Callable, Dict, List, Optional, Set, Tuple
 
 import requests
@@ -105,9 +110,21 @@ ROLES = {"planner": "reasoning", "judge": "reasoning", "director": "reasoning", 
 ENVIRONMENT_ERRORS = frozenset({"auth_expired", "network", "api_disabled", "permission_denied", "rate_limited"})
 RELEASE_NOTES_QUERY = "Agent Platform Vertex AI generative AI release notes new model available"
 VERSIONS_QUERY = "Gemini model versions and lifecycle retirement dates Agent Platform Vertex AI"
+DEPRECATIONS_QUERY = "Gemini API model deprecations shutdown dates and replacement models"
+# Lifecycle pages, most authoritative first: the Agent Platform model-versions page covers the endpoints the
+# Studio calls; the Gemini API deprecations page only fills in models the first page does not list; release
+# notes last. A page is matched by these fragments of its document name.
+LIFECYCLE_PRIORITY = ("models/model-versions", "gemini-api/docs/deprecations", "release-notes")
+MONTHS = "January|February|March|April|May|June|July|August|September|October|November|December"
+DATE_RE = re.compile(rf"\b(?:(?P<mon>{MONTHS})\s+(?P<day>\d{{1,2}}),\s+(?P<year>\d{{4}})|(?P<iso>\d{{4}}-\d{{2}}-\d{{2}}))\b")
+FLOOR_RE = re.compile(r"or later|no sooner than|no earlier than|not before|at the earliest", re.I)
+RETIRE_RE = re.compile(r"retire\w*|shut ?down|discontinu\w*|deprecat\w*|end of life|turn(?:ed|ing)? down", re.I)
+NO_DATE_RE = re.compile(r"no (?:retirement|shutdown|deprecation) date", re.I)
 TOKEN = re.compile(r"\b((?:gemini|veo|imagen|lyria)-[a-z0-9][a-z0-9.\-]*[a-z0-9])")
-ENTRY_KEYS = ("model", "location", "version", "ga", "rank", "launch_stage", "source")
-GONE = ("not served", "retired (listed, not callable)")
+RETIRING = "retiring"  # verified and callable, but its listed retirement date is within RETIRE_WITHIN_DAYS
+ENTRY_KEYS = ("model", "location", "version", "ga", "rank", "launch_stage", "source", "retires_on", "retire_floor",
+              "retire_source", "followed")
+GONE = ("not served", "retired (listed, not callable)", RETIRING)
 HISTORY_LIMIT = 200
 FEATURE_RETRY_AFTER = timedelta(hours=6)  # a failed feature read is retried sooner than the weekly re-read
 GOLDEN_RETRY_S = 5                        # pause before the one retry of a golden task after a transient error
@@ -255,6 +272,96 @@ def _fire_promotion_hooks(settings: Settings, events: List[dict]) -> Optional[th
 
 def _version(v: str) -> List[int]:
     return ([int(x) for x in v.split(".")] + [0, 0])[:3]  # "3" == "3.0"
+
+
+def _date_in(text: str) -> str:
+    """First date in `text` as ISO (YYYY-MM-DD), or ''. Month-only dates ("May 2023") do not count."""
+    m = DATE_RE.search(text or "")
+    if not m:
+        return ""
+    if m.group("iso"):
+        try:
+            return date.fromisoformat(m.group("iso")).isoformat()
+        except ValueError:
+            return ""
+    month = MONTHS.split("|").index(m.group("mon")) + 1
+    try:
+        return date(int(m.group("year")), month, int(m.group("day"))).isoformat()
+    except ValueError:
+        return ""
+
+
+def parse_retirements(text: str) -> Dict[str, dict]:
+    """Listed retirement per model ID on one lifecycle page -> {model: {"retires_on": ISO date or "",
+    "retire_floor": bool, "replacement": model ID or ""}}.
+    Table rows (| model | release date | retirement date | replacement |): the retirement is the second dated
+    cell after the model cell, so a release date alone never counts; "or later" / "no sooner than" in that cell
+    mark a floor (earliest possible date, not an announced one); "No retirement date announced" is recorded
+    as known-undated. Prose ("gemini-x: scheduled for retirement on March 15, 2027"): the first date after a
+    retirement word, and only when the line names exactly one model, so a date is never pinned on the wrong
+    model. The first mention of a model wins; callers feed pages in priority order."""
+    out: Dict[str, dict] = {}
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if line.startswith("|"):
+            cells = [c.strip() for c in line.strip("|").split("|")]
+            idx = next((i for i, c in enumerate(cells) if TOKEN.search(c)), None)
+            if idx is None or len(cells) < idx + 2:
+                continue
+            model = TOKEN.search(cells[idx]).group(1)
+            rest = list(enumerate(cells[idx + 1:], idx + 1))
+            dated = [(i, _date_in(c)) for i, c in rest if _date_in(c)]
+            if len(dated) >= 2:
+                i, when = dated[1]
+                after = [TOKEN.search(c) for _, c in rest if _ > i]
+                out.setdefault(model, {"retires_on": when, "retire_floor": bool(FLOOR_RE.search(cells[i])),
+                                       "replacement": next((m.group(1) for m in after if m), "")})
+            elif any(NO_DATE_RE.search(c) for _, c in rest):
+                out.setdefault(model, {"retires_on": "", "retire_floor": False, "replacement": ""})
+            continue
+        names = list(dict.fromkeys(TOKEN.findall(line)))
+        hit = RETIRE_RE.search(line)
+        if len(names) != 1 or not hit:
+            continue
+        tail = line[hit.end():hit.end() + 90]
+        when = _date_in(tail)
+        if when:
+            out.setdefault(names[0], {"retires_on": when, "retire_floor": bool(FLOOR_RE.search(tail)),
+                                      "replacement": ""})
+    return out
+
+
+def merge_lifecycle(pages: List[dict]) -> Dict[str, dict]:
+    """Retirements from several documents ({"name", "content"}), most authoritative page first
+    (LIFECYCLE_PRIORITY order, then the rest); each entry records the page it came from."""
+    def rank(d: dict) -> int:
+        name = str(d.get("name") or "")
+        return next((i for i, frag in enumerate(LIFECYCLE_PRIORITY) if frag in name), len(LIFECYCLE_PRIORITY))
+
+    out: Dict[str, dict] = {}
+    for d in sorted(pages, key=rank):
+        for model, info in parse_retirements(d.get("content", "")).items():
+            out.setdefault(model, {**info, "retire_source": str(d.get("name") or "")})
+    return out
+
+
+def days_to_retirement(c: dict) -> Optional[int]:
+    """Days until the listed firm retirement date of a candidate (negative = past); None if none or a floor."""
+    when = c.get("retires_on")
+    if not when or c.get("retire_floor"):
+        return None
+    try:
+        return (date.fromisoformat(str(when)) - date.today()).days
+    except ValueError:
+        return None
+
+
+def retirement_text(c: Optional[dict]) -> str:
+    """'retires 2026-10-20', 'retires 2026-11-17 or later' or '' for a registry entry."""
+    when = (c or {}).get("retires_on")
+    if not when:
+        return ""
+    return f"retires {when}" + (" or later" if c.get("retire_floor") else "")
 
 
 def _key(c: dict, tier: str = "") -> tuple:
@@ -408,6 +515,7 @@ class ModelResolver:
         self._canary_cache: Optional[Dict[tuple, dict]] = None  # set during a refresh only
         self._refresh_events: Optional[List[dict]] = None  # events of the final (locked) refresh pass only
         self._hook_thread: Optional[threading.Thread] = None  # last promotion-hook run (tests join it)
+        self.lifecycle: Dict[str, dict] = {}  # model -> listed retirement, read by discover() for this refresh
         self.reg = self._load()
 
     # ---------------------------------------------------------------- persistence
@@ -417,9 +525,10 @@ class ModelResolver:
             reg.setdefault("history", [])
             reg.setdefault("features", {})
             reg.setdefault("unclassified", [])
+            reg.setdefault("lifecycle", {})
             return reg
         return {"project": self.s.project_id, "refreshed_at": None, "tiers": {}, "history": [], "unclassified": [],
-                "features": {}}
+                "features": {}, "lifecycle": {}}
 
     def save(self) -> None:
         write_json(self.path, self.reg)
@@ -476,8 +585,14 @@ class ModelResolver:
             if c:
                 out[name] = {"model": c["model"], "location": c.get("location", self.s.location),
                              "label": tier.label, "launch_stage": c.get("launch_stage", ""),
-                             "source": c.get("source", ""), "features": self.features_for(c["model"])}
+                             "source": c.get("source", ""), "features": self.features_for(c["model"]),
+                             "retires_on": c.get("retires_on", ""), "retire_floor": bool(c.get("retire_floor"))}
         return out
+
+    def retirement(self, model: str) -> str:
+        """'retires 2026-10-20' (or '... or later' for a floor) for any model the lifecycle pages list, '' if
+        none is listed. Works for models of older saved builds too, not only the ones in use."""
+        return retirement_text(self.reg.get("lifecycle", {}).get(model))
 
     def health(self, tier: str, model: str, since: Optional[str] = None, window: Optional[int] = None) -> dict:
         rows = [r for r in read_jsonl(self.telemetry_path)
@@ -511,6 +626,7 @@ class ModelResolver:
                 "Model (auto-resolved)": c["model"] if c else "not found in docs",
                 "Where": c.get("location", "") if c else "",
                 "Stage": c.get("launch_stage", "") if c else "",
+                "Retires": (retirement_text(c).replace("retires ", "") if c else ""),
                 "Canary score": (f"{lc['score']:.2f}" if lc.get("score") is not None else "") if tier.text else "n/a",
                 "Runtime": (f"{h['calls']} calls, {1 - h['error_rate']:.0%} ok" if h.get("calls") else ""),
                 "Documented features": (f"{len(feats)} ({sum(1 for f in feats if f.get('new'))} new)" if feats else ""),
@@ -695,10 +811,28 @@ class ModelResolver:
         self._event(tier, event, entry["model"], previous=old["model"] if old else None, reason=reason, metrics=golden,
                     cause=cause)
 
+    def _followed(self, tier: str, model: str) -> bool:
+        """The model is in this tier because a lifecycle page named it as the replacement of a model that was in
+        use here (its name is outside the tier's naming rules)."""
+        t = self.reg["tiers"].get(tier) or {}
+        entries = [t.get("champion"), t.get("ga_champion")] + t.get("lkg", []) + t.get("fallbacks", [])
+        return any(c and c.get("model") == model and c.get("followed") for c in entries)
+
     def _still_valid(self, tier: str, model: str, status: Dict[str, str]) -> bool:
-        """False when the model no longer fits the tier's naming rules or is definitively not callable.
+        """False when the model no longer fits the tier (naming rules, or a followed replacement), is
+        definitively not callable, or retires within RETIRE_WITHIN_DAYS while the tier has other models.
         A transient verification error does not count: the model keeps serving."""
-        return bool(self._classify({model: ""}).get(tier)) and status.get(model) not in GONE
+        fits = bool(self._classify({model: ""}).get(tier)) or self._followed(tier, model)
+        return fits and status.get(model) not in GONE
+
+    def _why_invalid(self, tier: str, model: str, status: Dict[str, str]) -> str:
+        if status.get(model) == RETIRING:
+            info = self.lifecycle.get(model) or self.reg.get("lifecycle", {}).get(model) or {}
+            return (f"listed retirement {info.get('retires_on')} is within {self.s.policy.retire_within_days:g} days "
+                    f"(source: {doc_url(info.get('retire_source', '')) or 'lifecycle page'})")
+        if status.get(model) in GONE:
+            return f"{status.get(model)}: no longer callable on Agent Platform"
+        return "quarantined or moved to another tier"
 
     # ---------------------------------------------------------------- refresh
     def refresh(self, force: bool = False, log: Callable[[str], None] = print) -> List[str]:
@@ -725,6 +859,7 @@ class ModelResolver:
             verified, checked = self._verify(cands, must)
             if any(verified.values()):
                 notes = self._decide_and_save(verified, checked, unclassified)
+                notes += self._lifecycle_notes(checked)
                 notes += self._scout_features_safely()
             else:
                 notes = [self._why_unverified(cands, checked)]
@@ -735,6 +870,24 @@ class ModelResolver:
             return notes
         finally:
             _REFRESH_RUNNING.release()
+
+    def _lifecycle_notes(self, checked: Dict[str, List[dict]]) -> List[str]:
+        """One line per model set aside for an upcoming retirement, kept despite one (tier has nothing else),
+        or followed as a listed replacement."""
+        days = self.s.policy.retire_within_days
+        out: List[str] = []
+        for n, lst in checked.items():
+            for c in lst:
+                src = doc_url(c.get("retire_source", "")) or "lifecycle page"
+                if c.get("status") == RETIRING:
+                    out.append(f"{n}: {c['model']} not used, listed retirement {c.get('retires_on')} is within "
+                               f"{days:g} days ({src})")
+                elif c.get("status") == "verified" and days_to_retirement(c) is not None and days_to_retirement(c) <= days:
+                    out.append(f"{n}: {c['model']} kept although it retires {c.get('retires_on')}: no other verified "
+                               f"model in this tier ({src})")
+                if c.get("followed") and c.get("status") == "verified":
+                    out.append(f"{n}: {c['model']} followed as the listed replacement of {c['followed']} ({src})")
+        return out
 
     @staticmethod
     def _why_unverified(cands: Dict[str, List[dict]], checked: Dict[str, List[dict]]) -> str:
@@ -747,14 +900,18 @@ class ModelResolver:
         return f"no model could be verified on Agent Platform ({found or 'nothing checked'}); registry unchanged"
 
     def discover(self) -> Tuple[Dict[str, List[dict]], List[str]]:
-        """Ask Developer Knowledge MCP for model IDs; classify them into tiers by naming convention."""
-        queries = {"_release": RELEASE_NOTES_QUERY, "_versions": VERSIONS_QUERY,
+        """Ask Developer Knowledge MCP for model IDs; classify them into tiers by naming convention. Also reads
+        the lifecycle pages (model-versions, Gemini API deprecations, release notes) into self.lifecycle:
+        model -> listed retirement date and replacement."""
+        queries = {"_release": RELEASE_NOTES_QUERY, "_versions": VERSIONS_QUERY, "_deprecations": DEPRECATIONS_QUERY,
                    **{n: t.query for n, t in TIERS.items()}}
         with ThreadPoolExecutor(8) as ex:
             results = dict(zip(queries, ex.map(self._search_quietly, queries.values())))
         seen: Dict[str, str] = {}
+        texts: List[dict] = []  # everything read, for the lifecycle parser (chunks first, full pages after)
 
         def harvest(text: str, source: str) -> None:
+            texts.append({"name": source, "content": text or ""})
             for tok in TOKEN.findall(text or ""):
                 seen.setdefault(tok, source)
 
@@ -762,9 +919,9 @@ class ModelResolver:
             for r in res:
                 harvest(r.get("content", ""), r.get("parent", ""))
         cands = self._classify(seen)
-        # Search chunks are partial: read full pages for the release notes, the model-versions (lifecycle)
-        # page, and the model pages of tiers that are still empty.
-        names = [r.get("parent") for key in ("_release", "_versions") for r in results.get(key, [])[:1]]
+        # Search chunks are partial: read full pages for the release notes, the lifecycle pages, and the model
+        # pages of tiers that are still empty.
+        names = [r.get("parent") for key in ("_release", "_versions", "_deprecations") for r in results.get(key, [])[:1]]
         names += [r.get("parent") for n in TIERS if not cands.get(n) for r in results.get(n, [])[:2]]
         names = [x for x in dict.fromkeys(names) if x]
         if names:
@@ -776,9 +933,32 @@ class ModelResolver:
             for d in pages:
                 harvest(d.get("content", ""), d.get("name", ""))
             cands = self._classify(seen)
+        # Full pages before chunks of the same page (complete tables win), then page priority.
+        self.lifecycle = merge_lifecycle(list(reversed(texts)))
+        self._follow_replacements(cands)
         known = {c["model"] for lst in cands.values() for c in lst}
         unclassified = sorted(tok for tok in seen if tok not in known and re.search(r"-\d", tok))
         return cands, unclassified
+
+    def _follow_replacements(self, cands: Dict[str, List[dict]]) -> None:
+        """A model in use whose lifecycle row names a replacement outside every tier's naming rules (a renamed
+        family): the replacement joins that tier as a candidate, verified and canaried like any other. A
+        replacement that fits another tier's rules is already a candidate there (the degrade path covers it)."""
+        reg = self._load()
+        classified = {c["model"] for lst in cands.values() for c in lst}
+        for name in TIERS:
+            t = reg["tiers"].get(name) or {}
+            lst = cands.setdefault(name, [])
+            for c in [t.get("champion"), t.get("ga_champion")] + t.get("lkg", []):
+                repl = (self.lifecycle.get((c or {}).get("model", "")) or {}).get("replacement", "")
+                if not repl or repl in classified or self._classify({repl: ""}):
+                    continue
+                m = re.search(r"-(\d+(?:\.\d+)?)", repl)
+                lst.append({"model": repl, "version": _version(m.group(1)) if m else [0, 0, 0],
+                            "ga": not re.search(r"preview|exp", repl), "rank": len(TIERS[name].patterns),
+                            "source": self.lifecycle[c["model"]].get("retire_source", ""), "followed": c["model"]})
+                classified.add(repl)
+            lst.sort(key=lambda x, n=name: _key(x, n), reverse=True)
 
     def _search_quietly(self, query: str) -> List[dict]:
         """Discovery is best-effort per query: a failed search is logged and contributes no candidates."""
@@ -806,7 +986,8 @@ class ModelResolver:
 
     def _add_models_in_use(self, cands: Dict[str, List[dict]]) -> Set[str]:
         """Add the models in use to the candidates, so they are always re-verified (retirements). A model that
-        no longer matches its tier's naming rules is left out and drops from the tier."""
+        no longer matches its tier's naming rules is left out and drops from the tier, unless it was followed
+        there as a listed replacement."""
         reg = self._load()
         must: Set[str] = set()
         for name in TIERS:
@@ -814,24 +995,35 @@ class ModelResolver:
             lst = cands.setdefault(name, [])
             known = {x["model"] for x in lst}
             for c in [t.get("champion"), t.get("ga_champion")] + t.get("lkg", []):
-                fresh = self._classify({c["model"]: c.get("source", "")}).get(name) if c else None
-                if not fresh:
+                if not c:
+                    continue
+                fresh = self._classify({c["model"]: c.get("source", "")}).get(name)
+                if fresh:
+                    cand = fresh[0]
+                elif c.get("followed"):
+                    cand = {k: c[k] for k in ("model", "version", "ga", "rank", "source", "followed") if k in c}
+                else:
                     continue
                 must.add(c["model"])
                 if c["model"] not in known:
-                    lst.append(fresh[0])
+                    lst.append(cand)
                     known.add(c["model"])
             lst.sort(key=lambda x, n=name: _key(x, n), reverse=True)
         return must
 
     def _verify(self, cands: Dict[str, List[dict]], must: Set[str], per_tier: int = 3):
         """Model Garden lookup + call probe (configured location, then fallback region) for the best
-        candidates of each tier, the newest GA-named ones, and every model currently in use."""
+        candidates of each tier, the newest GA-named ones, every model currently in use and every followed
+        replacement. Then the lifecycle rule: a verified model whose listed firm retirement date is within
+        RETIRE_WITHIN_DAYS is set aside (status 'retiring') while the tier has another verified model."""
         regions = list(dict.fromkeys([self.s.location, self.s.fallback_region]))
         jobs = []
         for n, lst in cands.items():
+            for c in lst:
+                c.update({k: v for k, v in (self.lifecycle.get(c["model"]) or {}).items() if k != "replacement"})
             ga_top = [c["model"] for c in lst if c["ga"]][:2]
-            jobs += [(n, c) for i, c in enumerate(lst) if i < per_tier or c["model"] in must or c["model"] in ga_top]
+            jobs += [(n, c) for i, c in enumerate(lst)
+                     if i < per_tier or c["model"] in must or c["model"] in ga_top or c.get("followed")]
 
         def check(job):
             n, c = job
@@ -861,8 +1053,17 @@ class ModelResolver:
         verified: Dict[str, List[dict]] = {}
         for n, lst in checked.items():
             lst.sort(key=lambda c, t=n: _key(c, t), reverse=True)
-            verified[n] = [c for c in lst if c["status"] == "verified"]
+            ok = [c for c in lst if c["status"] == "verified"]
+            soon = [c for c in ok if self._retires_soon(c)]
+            if soon and len(soon) < len(ok):  # the tier has other models: a model retiring soon is not used
+                for c in soon:
+                    c["status"] = RETIRING
+            verified[n] = [c for c in ok if c["status"] == "verified"]
         return verified, checked
+
+    def _retires_soon(self, c: dict) -> bool:
+        days = days_to_retirement(c)
+        return days is not None and days <= self.s.policy.retire_within_days
 
     def _decide_and_save(self, verified: Dict[str, List[dict]], checked: Dict[str, List[dict]],
                          unclassified: List[str]) -> List[str]:
@@ -884,7 +1085,9 @@ class ModelResolver:
                 self.reg = self._load()
                 self._decide(verified, status, notes)
                 self._prune(verified, checked, status)
-                self.reg.update(unclassified=unclassified[:20], refreshed_at=iso(), project=self.s.project_id)
+                lifecycle = self.lifecycle or self.reg.get("lifecycle") or {}  # a failed read keeps the last table
+                self.reg.update(unclassified=unclassified[:20], refreshed_at=iso(), project=self.s.project_id,
+                                lifecycle=lifecycle)
                 self.save()
             events, self._refresh_events = self._refresh_events, None
             self._hook_thread = _fire_promotion_hooks(self.s, events)
@@ -915,7 +1118,9 @@ class ModelResolver:
             t["fallbacks"] = [c for c in verified.get(n, []) if c["model"] not in used][:3]
             t["candidates"] = [{"model": c["model"], "status": c.get("status", "unchecked"),
                                 "location": c.get("location", ""), "launch_stage": c.get("launch_stage", ""),
-                                "source": c.get("source", "")} for c in checked.get(n, [])][:8]
+                                "source": c.get("source", ""), "retires_on": c.get("retires_on", ""),
+                                "retire_floor": bool(c.get("retire_floor")), "followed": c.get("followed", "")}
+                               for c in checked.get(n, [])][:8]
 
     def _golden(self, cand: dict) -> dict:
         """Golden-set canary for one model. During a refresh results are cached, so the rehearsal and the
@@ -975,8 +1180,9 @@ class ModelResolver:
         p = self.s.policy
         t = self.reg["tiers"].setdefault(name, {})
         champ = t.get("champion")
+        had = bool(champ)
         if champ and (self._quarantined(name, champ["model"]) or not self._still_valid(name, champ["model"], status)):
-            self._event(name, "retired", champ["model"], reason="champion quarantined, retired or moved to another tier")
+            self._event(name, "retired", champ["model"], reason=self._why_invalid(name, champ["model"], status))
             t["champion"], champ = None, None
         self._prefetch([champ, self._challenger(name, verified, champ)])
         if champ:
@@ -999,8 +1205,9 @@ class ModelResolver:
             if r["score"] >= p.promote_min_score and (not cr or r["score"] >= cr["score"]) and fast_enough:
                 why = (f"newer model passed canary: golden {r['score']:.2f} vs {cr['score']:.2f}, "
                        f"p50 {r['latency_ms']} ms vs {cr.get('latency_ms')} ms" if cr else
-                       f"first run: newest verified model, golden {r['score']:.2f}")
-                self._set_champion(name, challenger, "promoted" if champ else "bootstrap", why, r)
+                       (f"replaces the champion set aside this refresh, golden {r['score']:.2f}" if had else
+                        f"first run: newest verified model, golden {r['score']:.2f}"))
+                self._set_champion(name, challenger, "promoted" if (champ or had) else "bootstrap", why, r)
                 notes.append(f"{name}: {challenger['model']} ({why})")
             else:
                 why = (f"held back: golden {r['score']:.2f}" + (f" vs champion {cr['score']:.2f}" if cr else "")
@@ -1027,7 +1234,7 @@ class ModelResolver:
         t = self.reg["tiers"].setdefault(name, {})
         champ = t.get("champion")
         if champ and (self._quarantined(name, champ["model"]) or not self._still_valid(name, champ["model"], status)):
-            self._event(name, "retired", champ["model"], reason="no longer callable, quarantined or moved to another tier")
+            self._event(name, "retired", champ["model"], reason=self._why_invalid(name, champ["model"], status))
             t["champion"], champ = None, None
         ahead = [c for c in verified if not self._quarantined(name, c["model"])
                  and (not champ or _key(c, name) > _key(champ, name))]

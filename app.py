@@ -237,7 +237,9 @@ def render_architecture(res: dict) -> None:
         st.markdown(f'<div style="background:#F8F9FA;border:1px solid #DADCE0;border-left:4px solid #1A73E8;'
                     f'border-radius:6px;padding:12px 16px;margin-bottom:12px;font-size:0.92rem;line-height:1.5;">'
                     f'{html.escape(res["summary"])}</div>', unsafe_allow_html=True)
-    models_line = ", ".join(f"{tier}: `{m['model']}`" for tier, m in res["models"].items()) or "none (no AI stage)"
+    lifecycle = ModelResolver(settings).retirement
+    models_line = ", ".join(f"{tier}: `{m['model']}`" + (f" ({lifecycle(m['model'])})" if lifecycle(m["model"]) else "")
+                            for tier, m in res["models"].items()) or "none (no AI stage)"
     st.caption(f"Models ({res['mode']} mode, auto-resolved, newest verified): {models_line}")
     st.graphviz_chart(build_architecture_dot(res.get("stages", []), res.get("deliverables") or []),
                       width="stretch")
@@ -395,7 +397,21 @@ def checking_message(kind: str) -> str:
         return "Checking the agent run: schema, plausible steps, safe actions and brand safety…"
     if kind in ("text", "chat"):
         return "Checking the text: language, brief and brand safety…"
-    return "Checking the clip: language, script, lip-sync and look…"
+    return "Checking the clip: subject, language, script, lip-sync, length and look…"
+
+
+def asset_caption(d: dict, a: dict) -> str:
+    """The line under a generated asset: model, a video's real length and shot count, generation time, language."""
+    parts = [str(a.get("model") or "")]
+    if d.get("kind") == "video":
+        length = float(a.get("length_s") or 0)
+        shots = len(a.get("shots") or []) or 1
+        if length:
+            parts.append(f"{length:g}-second clip" + (f" in {shots} shots" if shots > 1 else ""))
+    parts.append(f"generated in {a.get('seconds')} s")
+    if a.get("language"):
+        parts.append(f"language {a['language']}")
+    return " · ".join(p for p in parts if p)
 
 
 def _asset_view(project_dir: str, d: dict, a: dict, build_id: str, settings: Settings) -> None:
@@ -424,7 +440,7 @@ def _asset_view(project_dir: str, d: dict, a: dict, build_id: str, settings: Set
         else:
             with open(path, "r", encoding="utf-8") as f, st.container(border=True):
                 st.markdown(f.read())  # model text as markdown; HTML stays disabled
-        st.caption(f"{a.get('model')} · {a.get('seconds')} s" + (f" · language {a['language']}" if a.get("language") else ""))
+        st.caption(asset_caption(d, a))
         if a.get("carried_over"):
             st.caption("Reused unchanged from the previous version")
         render_qa(a.get("qa") or {})
@@ -449,8 +465,10 @@ def _asset_view(project_dir: str, d: dict, a: dict, build_id: str, settings: Set
     elif status == "checking":
         st.info(checking_message(d.get("kind")))
     elif status == "running":
-        st.info(f"Generating on the {d['tier']} tier…" + (" Video clips take one to three minutes each."
-                                                          if d["kind"] == "video" else ""))
+        shots = len(a.get("shots") or []) or 1
+        wait = (f" A {d.get('seconds')}-second video is {shots} Veo shots filmed one after another, one to three "
+                "minutes each." if shots > 1 else " Video clips take one to three minutes each.")
+        st.info(f"Generating on the {d['tier']} tier…" + (wait if d["kind"] == "video" else ""))
     elif status == "failed":
         st.error(f"Could not generate this asset: {redact(a.get('error', ''))[:400]}")
     elif status == "unsupported":
