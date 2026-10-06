@@ -155,7 +155,7 @@ flowchart TB
     MCP -. "model IDs, features, doc context" .-> R
 ```
 
-Two different lists, on purpose. **What a demo can use** is open: the planner picks services for the customer's ask from the official docs (a delivery demo gets Maps, Fleet Engine and Firebase; an analytics demo gets BigQuery), so coverage is everything Google documents. **What the studio itself calls** is deliberately small: Gemini to think, the media models to make demo assets, Cloud Storage and Drive to keep and publish them. The studio designs, writes and evaluates the demo; it does not run the customer's services (generated code is never executed), so it needs no credentials for them.
+Two different lists, on purpose. **What a demo can use** is open: the planner picks services for the customer's ask from the official docs (a delivery demo gets Maps, Fleet Engine and Firebase; an analytics demo gets BigQuery), so coverage is everything Google documents. It is Google Cloud only by default: a stage on another vendor's service, a bare protocol or a client platform is accepted only when the ask names it (and the card says so); a customer's own app is modelled by the Google Cloud service it calls. **What the studio itself calls** is deliberately small: Gemini to think, the media models to make demo assets, Cloud Storage and Drive to keep and publish them. The studio designs, writes and evaluates the demo; it does not run the customer's services (generated code is never executed), so it needs no credentials for them.
 
 **When a use case needs a call outside that list**, each stage is handled by its kind, automatically:
 
@@ -294,8 +294,10 @@ Every build, demo output, chat change and model upgrade is evaluated. Thresholds
 | R7 Security / PII | 0 findings after redaction |
 | R8 Standard parameters | Project placeholder, location, models map; no model IDs in code |
 | R9 Use case works end to end | **80 % or more** of the acceptance tests pass and no safety failure [`ACCEPTANCE_MIN_PASS`] |
+| R10 Google Cloud only (plan time) | Every stage runs on a specific Google Cloud product (never just "Google Cloud"). Another vendor's service, a bare protocol or a client platform (AWS, Twilio, WebRTC, Android…) is accepted only when the ask or the customer names it; the stage card then says so. A plan that breaks this is sent back to the planner with the reason |
+| R11 Short stage cards (plan time) | Stage name 2–3 words, API 2–5 words, description one plain 8–14 word sentence; a plan over the caps (4 words / 32 characters, 8 words, 20 words) is sent back |
 
-**Score** = mean of the rows (judge rows as score/5, checks as 1 or 0). **PASSED** = every row passes. Otherwise up to 3 attempts [`EVAL_MAX_ATTEMPTS`] with the failed rows fed back as fixes; the best attempt is kept as **BEST EFFORT**.
+**Score** = mean of the rows (judge rows as score/5, checks as 1 or 0). **PASSED** = every row passes. Otherwise up to 3 attempts [`EVAL_MAX_ATTEMPTS`] with the failed rows fed back as fixes; the best attempt is kept as **BEST EFFORT**. R10 and R11 are checked when the plan is parsed, so they never reach the scorecard: the planner re-answers until they hold.
 
 #### 4.3 Acceptance tests — does the use case actually work? (`engine/acceptance.py`)
 
@@ -364,4 +366,4 @@ On failure the model is **held** (not promoted) or **rolled back** to the last k
   - `engine/serve.py` warms up the model registry in `.cache/` on startup, runs `engine/project_sync.py` in a background daemon thread to restore and back up `generated_projects/` to `gs://<bucket>/_projects/` every 60 seconds, and then starts `engine/prebuild.py` (after the restore and once models are resolved) so a fresh instance fills in whatever samples the bucket did not have, without waiting for a visitor; the same thread then redraws old decks and plays the first reply of any chat demo that has none.
 * **Knobs**: `PREBUILD_SAMPLES` (default `true`) turns the pre-build off; `PREBUILD_PARALLEL` (default 4) is how many samples build at once; `python -m engine.prebuild --status` reports which samples are current, `--force` rebuilds all, `--push` uploads them to the bucket, `--decks` only redraws the decks of saved projects for a new slide layout, `--chats` only re-directs and plays the chat demos that have no first reply yet.
 
-Offline unit tests: `python -m unittest discover -s tests` (368 tests, about 3 seconds, no cloud calls). CI (`.github/workflows/ci.yml`) runs the same suite plus a `bash -n deploy.sh` syntax check on every push and pull request, with the actions pinned to commit hashes and a read-only token.
+Offline unit tests: `python -m unittest discover -s tests` (387 tests, about 5 seconds, no cloud calls). CI (`.github/workflows/ci.yml`) runs the same suite plus a `bash -n deploy.sh` syntax check on every push and pull request, with the actions pinned to commit hashes and a read-only token.
