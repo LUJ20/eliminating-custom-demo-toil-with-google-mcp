@@ -65,7 +65,8 @@ CRITERIA_HELP = {
                             "form this use case really produces it (media for media, avatar or voice asks; the "
                             "data result for data, search, extraction or recommendation asks; the agent's steps "
                             "for agents and workflows; a chat for conversational assistants), with each requested "
-                            "language, locale or version as its own variant",
+                            "language, locale or version as its own variant, and, when the system reads documents "
+                            "or photos, an example of that input shown before its result",
     "storytelling": "the demo tells one clear, engaging story that fits the ask: a named hero with a concrete moment "
                     "of need, scenes in order that each prove a requested capability, every deliverable playing a "
                     "scene, and a payoff for the hero and the business",
@@ -146,7 +147,10 @@ image, speech or music for media, avatar or voice asks; structured for data, sea
 recommendation asks (the real result, e.g. the extracted fields, the ranked recommendations or the search results
 with their sources); agent_trace for agents, workflows and tool use (the agent's steps, tool by tool); chat for
 conversational assistants; text for written artifacts. Mix kinds freely; every deliverable plays a story scene.
-Cover every output the ask mentions. Each language, locale, persona or
+Cover every output the ask mentions. When the system reads visual inputs (scanned forms, invoices, receipts, photos,
+product images), also add one image deliverable per input kind: a realistic synthetic example of that input (a scanned
+claim form with a few legible fields, a photo of the damage) playing the scene where it is uploaded, listed before the
+deliverable that extracts or analyses it, so the viewer sees the input and then the result. Each language, locale, persona or
 version the ask lists is its own variant of the same deliverable, never merged. When the same character must appear
 in every variant of a video (an avatar, presenter or agent), add an image deliverable for that character and set
 the video's "start_from" to its id. At most {max_assets} generated media files in total (variants of video, image,
@@ -461,7 +465,10 @@ For every deliverable and every variant, return "prompt" and "script":
   setting too when the clip starts from an image); the action and mood follow the scene;
   if the deliverable has start_from, the clip starts from that image, so describe that same character.
 - image: prompt = a detailed visual description; for a character portrait, a front-facing, well-lit
-  medium shot with a neutral background, suited to be the first frame of a video.
+  medium shot with a neutral background, suited to be the first frame of a video. For an input document or photo
+  that another deliverable extracts or analyses (a scanned form, an invoice, a receipt, a damage photo): a realistic
+  front-on capture with few, large, legible fields (5 to 8, no dense fine print) whose visible names, numbers, dates
+  and amounts are exactly the facts that deliverable reports; a fictional company and person, never a real one.
 - speech: prompt = a short delivery instruction such as "Say warmly and clearly"; the script is what is said.
 - music: prompt = genre, instruments, tempo and mood.
 - text: prompt = the full instruction to write the artifact in the variant's language.

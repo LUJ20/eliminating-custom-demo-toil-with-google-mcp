@@ -2,7 +2,8 @@
 it can observe, against the deliverable (kind, title, brief, story scene) and the variant (language, script, prompt).
 
 Checks depend on the kind: language spoken, script followed, lip-sync, same person as the start image,
-brand safety, legible on-screen text, and whether the asset matches its prompt. Written outputs are checked too:
+brand safety, legible on-screen text (critical on an image, soft on a video), and whether the asset matches its
+prompt. Written outputs are checked too:
 a "text" deliverable's generated text, and a "chat" deliverable's transcript (the system instruction the media
 director wrote, the first user message and the assistant's first reply) are sent as a text part, never as inline
 media. When the deliverable plays a
@@ -68,9 +69,17 @@ CHECKS: Dict[str, Tuple[str, bool]] = {
                     "character when given): same moment, setting and characters.", False),
 }
 CRITICAL = frozenset(n for n, (_, crit) in CHECKS.items() if crit)
+# Critical for one kind only: garbled text on an image (a form, a chart, a sign) is a defect, and an image is cheap
+# to regenerate; on a video, incidental signage only lowers the score.
+KIND_CRITICAL = frozenset({("image", "on_screen_text")})
 PROGRAMMATIC = frozenset({"schema_valid"})  # decided by code before the reviewer is called
 
-# (kind, name) -> a kind-specific wording of a check; the name (and so its criticality) stays the same.
+
+def is_critical(kind: str, name: str) -> bool:
+    return name in CRITICAL or (kind, name) in KIND_CRITICAL
+
+
+# (kind, name) -> a kind-specific wording of a check; the name stays the same.
 KIND_CHECKS: Dict[Tuple[str, str], str] = {
     ("chat", "written_language"): "The system instruction makes the assistant reply in {language}, the first "
                                   "user message is written in {language}, and so is the assistant's first reply.",
@@ -263,8 +272,9 @@ Return JSON only: {{"checks": [{{"name": "<check name>", "ok": true, "why": "...
 sentences for the demo owner>"}}""" + (f"\nYour previous answer was rejected: {_bounded(hint, 300)}" if hint else "")
 
 
-def validate(text: str, names: List[str]) -> dict:
-    """Parse and strictly validate the reviewer's answer -> {verdict, score, checks, summary}. Raises OutputError."""
+def validate(text: str, names: List[str], kind: str = "") -> dict:
+    """Parse and strictly validate the reviewer's answer -> {verdict, score, checks, summary}. Raises OutputError.
+    `kind` decides the per-kind criticality (KIND_CRITICAL)."""
     try:
         data = vertex.parse_json(text)
     except ValueError as e:
@@ -288,7 +298,7 @@ def validate(text: str, names: List[str]) -> dict:
         why = item.get("why")
         if not isinstance(why, str) or not why.strip():
             raise OutputError(f"check '{name}' needs a 'why' string")
-        got[name] = {"name": name, "ok": item["ok"], "why": _bounded(why, MAX_WHY), "critical": name in CRITICAL}
+        got[name] = {"name": name, "ok": item["ok"], "why": _bounded(why, MAX_WHY), "critical": is_critical(kind, name)}
     missing = [n for n in names if n not in got]
     if missing:
         raise OutputError(f"checker output is missing check(s): {', '.join(missing)}")
@@ -352,9 +362,9 @@ def check(settings: Settings, model: str, location: str, *, deliverable: dict, v
             "generationConfig": {"responseMimeType": "application/json"}}
     answer = vertex.post_json(settings, vertex.model_url(settings, model, location, "generateContent"), body, model,
                               timeout=TIMEOUT_S)
-    result = validate(vertex.text_of(answer), asked)
+    result = validate(vertex.text_of(answer), asked, kind)
     if len(asked) == len(names):
         return result
     programmatic = [{"name": n, "ok": True, "why": "the output matches its JSON contract (checked by the studio)",
-                     "critical": n in CRITICAL} for n in names if n in PROGRAMMATIC]
+                     "critical": is_critical(kind, n)} for n in names if n in PROGRAMMATIC]
     return _scored(programmatic + result["checks"], result["summary"])

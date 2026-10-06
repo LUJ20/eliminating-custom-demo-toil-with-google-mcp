@@ -56,7 +56,6 @@ DEFAULT_COLORS = (WHITE, BLUE)
 SLIDE_W, SLIDE_H = Inches(13.333), Inches(7.5)
 LEFT, CONTENT_W, BODY_TOP = Inches(0.75), Inches(11.833), Inches(1.35)
 MAX_CELL_CHARS = 240
-MAX_FEATURE_ROWS = 8
 MAX_RUBRIC_ROWS = 11
 BLANK_LAYOUT = 6
 DECK_VERSION = "6"  # the slide layout; stamped into every deck. Bump it when the slides change: saved decks made
@@ -186,7 +185,6 @@ def _table(slide, header: List[str], rows: List[List[Cell]], widths: List[float]
 # ---------------------------------------------------------------------------------------------- slides
 LIGHT_GREEN = RGBColor(230, 244, 234)
 GREY_FILL = RGBColor(241, 243, 244)
-MAX_PER_ROW = 4
 TIER_LABELS = {"reasoning": "Gemini reasoning", "fast": "Gemini fast", "lite": "Gemini lite", "live": "Gemini Live",
                "image": "Image", "image_fast": "Image (fast)", "video": "Video", "video_fast": "Video (fast)",
                "speech": "Speech", "music": "Music", "embedding": "Embeddings"}

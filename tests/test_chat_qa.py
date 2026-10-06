@@ -1,7 +1,6 @@
 """Build chat question mode: answers grounded in Developer Knowledge MCP docs with validated citations, the whole
 build in view, and no version or regeneration for a question. The citation verifier is passed through here
 (EditorTest.PASS_THROUGH_VERIFIERS); test_chat_evals exercises it."""
-import os
 import unittest
 from unittest import mock
 

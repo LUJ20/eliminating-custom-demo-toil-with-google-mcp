@@ -37,9 +37,21 @@ class ValidateTest(unittest.TestCase):
 
     def test_a_critical_failure_fails_and_a_minor_one_only_lowers_the_score(self):
         self.assertEqual(media_qa.validate(answer(self.names, {"language"}), self.names)["verdict"], "fail")
-        minor = media_qa.validate(answer(self.names, {"on_screen_text"}), self.names)
+        minor = media_qa.validate(answer(self.names, {"on_screen_text"}), self.names, "video")
         self.assertEqual(minor["verdict"], "pass")
         self.assertAlmostEqual(minor["score"], 6 / 7, places=3)
+
+    def test_garbled_text_fails_an_image_but_not_a_video(self):
+        names = media_qa.checks_for({"kind": "image"}, {"prompt": "a claim form"}, has_reference=False)
+        self.assertIn("on_screen_text", names)
+        image = media_qa.validate(answer(names, {"on_screen_text"}), names, "image")
+        self.assertEqual(image["verdict"], "fail")
+        self.assertTrue(next(c for c in image["checks"] if c["name"] == "on_screen_text")["critical"])
+        video = media_qa.validate(answer(self.names, {"on_screen_text"}), self.names, "video")
+        self.assertEqual(video["verdict"], "pass")
+        self.assertTrue(media_qa.is_critical("image", "on_screen_text"))
+        self.assertFalse(media_qa.is_critical("video", "on_screen_text"))
+
 
     def test_bad_answers_raise_output_error(self):
         good = json.loads(answer(self.names))

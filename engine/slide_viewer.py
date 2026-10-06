@@ -6,7 +6,6 @@ direct links to Google Slides.
 import os
 import json
 import html as _html
-import base64 as _b64
 from typing import Optional
 
 try:

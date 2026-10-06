@@ -14,7 +14,6 @@ from typing import Dict, List, Optional, Tuple
 STORY_SUFFIX = "_story_script.html"
 SHOT_CHARS = 220
 _LANG = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{1,8}){0,4}$")  # BCP-47-ish; anything else is dropped
-_CJK = ("ja", "zh", "ko", "yue")
 # = manifest.KIND_LABELS for the kinds whose name is not shown as it is (kept stdlib-only here)
 KIND_LABELS = {"structured": "data result", "agent_trace": "agent run"}
 UNSCRIPTED_KINDS = frozenset({"structured", "agent_trace"})  # outputs with no spoken or shown script

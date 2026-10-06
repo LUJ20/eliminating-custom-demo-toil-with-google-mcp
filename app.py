@@ -34,7 +34,7 @@ from engine.config import (Settings, default_bucket, drive_folder_id, get_settin
                            valid_project_id)
 from engine.manifest import DATA_KINDS, MEDIA_KINDS, kind_label
 from engine.mcp_knowledge_client import McpKnowledgeClient
-from engine.model_resolver import ROLES, ModelResolver
+from engine.model_resolver import ModelResolver
 from engine.pii_sanitizer import AUDIT_FILE
 from engine.samples import SAMPLES
 from engine.slide_viewer import render_presentation_player
@@ -184,31 +184,6 @@ def hourly_refresh_check(settings: Settings) -> bool:
         return False
     threading.Thread(target=_refresh_quietly, args=(settings,), name="model-refresh", daemon=True).start()
     return True
-
-
-def render_models(resolver: ModelResolver, settings: Settings) -> None:
-    catalog = resolver.catalog()
-    brain_line = " · ".join(f"{role}: {catalog[tier]['model']}" for role, tier in
-                            (("planner + judge", ROLES["planner"]), ("codegen", ROLES["codegen"])) if tier in catalog)
-    with st.expander(f"Models in use, {settings.mode} mode: auto-resolved, newest verified ({brain_line or 'none yet'})"):
-        st.caption(f"Discovered in Developer Knowledge MCP docs, verified callable in `{settings.project_id}`, "
-                   "canary-gated before promotion, rolled back automatically on regression. Features are read from "
-                   f"each model's official page. Last refresh: {(resolver.reg.get('refreshed_at') or 'never').replace('T', ' ')} "
-                   f"UTC, every {settings.refresh_hours:g} h.")
-        st.dataframe(resolver.rows(), hide_index=True, width="stretch")
-        if st.button("Re-resolve models now", key="reresolve"):
-            with st.spinner("Re-resolving: MCP discovery, verification, canary, features..."):
-                st.session_state["resolver_notes"] = resolver.refresh(force=True, log=logger.info)
-            st.rerun()
-        if st.session_state.get("resolver_notes"):
-            st.caption("Last run: " + " | ".join(st.session_state["resolver_notes"]))
-        history = resolver.history_rows()
-        if history:
-            st.markdown("**Promotions, holds, rollbacks**")
-            st.dataframe(history, hide_index=True, width="stretch")
-        if resolver.reg.get("unclassified"):
-            st.caption("IDs seen in docs that match no tier yet (new families or variants): "
-                       + ", ".join(resolver.reg["unclassified"][:12]))
 
 
 # ---------------------------------------------------------------------------------------------- architecture
@@ -923,14 +898,18 @@ def render_build_chat(res: dict, settings: Settings) -> None:
 
 
 @st.dialog("Discard unsaved changes?")
-def discard_dialog(settings: Settings) -> None:
-    st.write("The build goes back to its last saved version.")
+def discard_dialog(settings: Settings, project_dir: str = "") -> None:
+    """Confirm, then put the project (the open build by default) back to its last saved version."""
+    res = st.session_state.get("solution_result") or {}
+    project_dir = project_dir or res["project_dir"]
+    st.write(f"**{md_escape(draft_label(project_dir))}** goes back to its last saved version.")
     a, b = st.columns(2)
     if a.button("Discard", type="primary", width="stretch"):
-        res = st.session_state["solution_result"]
-        st.session_state["solution_result"] = new = build_editor.discard(settings, res["project_dir"])
-        if new.get("deliverables_started"):
-            st.session_state[f"deliverables_started_{new['build_id']}"] = True
+        new = build_editor.discard(settings, project_dir)
+        if res.get("project_dir") == project_dir:
+            st.session_state["solution_result"] = new
+            if new.get("deliverables_started"):
+                st.session_state[f"deliverables_started_{new['build_id']}"] = True
         st.rerun()
     if b.button("Cancel", width="stretch"):
         st.rerun()
@@ -1057,6 +1036,16 @@ def unsaved_drafts(settings: Settings) -> list:
         return []
     dirs = [os.path.join(root, n) for n in sorted(os.listdir(root)) if not n.startswith(".")]
     return [d for d in dirs if os.path.isdir(os.path.join(d, ".versions")) and build_editor.is_dirty(d)]
+
+
+def draft_label(project_dir: str) -> str:
+    """A project's customer name (read from its saved result, without loading the build), else its folder name."""
+    try:
+        with open(os.path.join(project_dir, RESULT_FILE), encoding="utf-8") as f:
+            name = str(json.load(f).get("customer_name") or "")
+    except (OSError, ValueError):
+        name = ""
+    return " ".join(name.split())[:80] or os.path.basename(project_dir)
 
 
 # ---------------------------------------------------------------------------------------------- page
@@ -1237,16 +1226,18 @@ with st.sidebar:
     if drafts:
         st.markdown("---")
         st.subheader("Unsaved changes")
-        st.caption("Chat changes are kept until you save or discard them.")
+        st.caption("Chat changes are kept until you save or discard them. Each build below has some.")
         current_dir = (st.session_state.get("solution_result") or {}).get("project_dir")
         for i, d in enumerate(drafts):
-            name = os.path.basename(d)
-            r1, r2 = st.columns([3, 2])
-            r1.markdown(f"`{md_escape(name)}`")
+            r1, r2, r3 = st.columns([3, 2, 2])
+            r1.markdown(f"**{md_escape(draft_label(d))}**" + (" (open)" if d == current_dir else ""))
+            r1.caption(os.path.basename(d))
             if d != current_dir and r2.button("Resume", key=f"resume_{i}", width="stretch"):
                 st.session_state["solution_result"] = opened = build_editor.load_result(settings, d)
                 fill_form(opened.get("customer_name"), opened.get("usecase_ask"), sample_for(opened))
                 st.rerun()
+            if r3.button("Discard", key=f"discard_draft_{i}", width="stretch"):
+                discard_dialog(settings, d)
 
 if "solution_result" in st.session_state:
     res = st.session_state["solution_result"]

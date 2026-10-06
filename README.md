@@ -13,7 +13,9 @@ scanned forms"*. The studio returns:
 - **Architecture**: each step mapped to a Google Cloud service and model, with the official doc behind every choice
 - **Starter code**: a Python pipeline with its requirements and a README, packaged as a zip
 - **Demo outputs**: videos, images, voice and music from Google's media models, or structured results, agent
-  traces and chat demos (opened on a played, checked first reply, with charts) for non-media use cases
+  traces and chat demos (opened on a played, checked first reply, with charts) for non-media use cases; when the
+  system reads documents or photos (claims intake, invoices, damage photos), a synthetic example of that input is
+  shown before its extracted result, with the same names, numbers and dates
 - **Story**: a hero, a challenge and a payoff, plus a presenter script
 - **Deck**: five editable slides (story, the same architecture flow as the app's diagram with the demo outputs
   attached, deliverables, scorecard, package) with the talk track in the speaker notes; PowerPoint, or Google
@@ -50,7 +52,7 @@ flowchart TB
     end
     subgraph JJ ["4. Evaluate (two at once)"]
         direction LR
-        J["Judge: 5-row rubric<br/>(Gemini, reasoning tier)"] ~~~ K["Code checks: model currency, features in code,<br/>dependencies in install docs, compiles, PII"]
+        J["Judge: 5-row rubric<br/>(Gemini, reasoning tier)"] ~~~ K["Code checks: models up to date, features in code,<br/>dependencies in install docs, compiles, PII"]
     end
     U["Use case: customer + ask"] --> G
     G --> PL["2. Plan: stages on Google Cloud, model features, demo deliverables, story<br/>(Gemini, reasoning tier · checked by code, re-asked until valid)"]
@@ -145,36 +147,37 @@ To remove the app: `gcloud run services delete gemini-mcp-studio --region us-cen
 
 ### 1. Core Architectural Pattern
 
-The codebase uses a **deterministic Python orchestrator** pattern (`Orchestrator → Gemini Brain + MCP Knowledge + Direct Google API Tools`) rather than an open-ended autonomous tool-calling loop:
+The codebase uses a **deterministic Python orchestrator** pattern (`Orchestrator → Gemini Brain + MCP Knowledge + Direct Google API Tools`) rather than an open-ended autonomous tool-calling loop. The boxes are numbered in the order one build uses them; each arrow is what a step hands to the next:
 
 ```mermaid
 flowchart TB
-    UI["1. Streamlit UI · app.py<br/>takes the ask, shows the kit"] --> O["2. Python orchestrators<br/>usecase_synthesizer.py · build_editor.py · deliverables.py · prebuild.py<br/>(step order, retries, parallelism, cost caps)"]
-    O --> TS["Troubleshooter (around every model call in 4 and 5)<br/>troubleshooter.py: invalid output → re-prompt with the reason · failure → fallback model · incidents logged"]
-    subgraph K["3. Knowledge: all Google developer docs"]
-        MCP["Developer Knowledge MCP<br/>mcp_knowledge_client.py<br/>search_documents · get_documents"]
-        ANY["Any Google Cloud service can be in a demo<br/>BigQuery · Document AI · Agent Search · Maps<br/>Firebase · Pub/Sub · Cloud Run · Spanner · ... (from the docs)"]
-        MCP --> ANY
+    UI["1. Streamlit UI · app.py<br/>takes the ask, shows the kit"]
+    O["2. Python orchestrator · usecase_synthesizer.py (build) · build_editor.py (chat edits)<br/>deliverables.py (media jobs) · prebuild.py (samples)<br/>plain Python: calls steps 3 to 7 in this order, with retries, parallel lanes and cost caps"]
+    subgraph K ["3. Knowledge: Developer Knowledge MCP · mcp_knowledge_client.py"]
+        direction LR
+        MCP["search_documents · get_documents<br/>official docs for the ask, model pages, install docs"] ~~~ ANY["Any Google Cloud service can be in the design<br/>BigQuery · Document AI · Maps · Firebase · Pub/Sub · Spanner · ... (from the docs)"]
     end
-    subgraph B["4. Gemini brain"]
-        R["4a. Model Resolver<br/>model_resolver.py<br/>newest verified model per tier"]
-        G["4b. brain.py · code_editor.py · vertex.py<br/>plan · media direction · code · judge · chat edits"]
-        R --> G
+    subgraph B ["4. Gemini brain"]
+        direction LR
+        R["4a. Model Resolver · model_resolver.py<br/>newest verified model per tier (found in the docs)"] --> G["4b. brain.py · code_editor.py · vertex.py<br/>plan · story · media direction · pipeline.py · judge · chat edits"]
     end
-    subgraph T["5. Google APIs the studio itself calls"]
-        API["media.py · artifact_store.py · project_sync.py<br/>Veo · Imagen · Gemini-TTS · Lyria (demo media)<br/>Live · Embeddings (model verification only)<br/>Cloud Storage · Drive + Slides"]
+    subgraph T ["5. Google APIs the studio itself calls · media.py · artifact_store.py · project_sync.py"]
+        direction LR
+        MED["Demo media, only when the plan asks for them<br/>Veo · Imagen · Gemini-TTS · Lyria"] ~~~ ST["Cloud Storage (every build) · Drive + Slides (on publish)<br/>Live · Embeddings: model verification only"]
     end
-    subgraph E["6. Evaluation and safety"]
-        EV["acceptance.py · media_qa.py · dependency_resolver.py<br/>regression.py · pii_sanitizer.py"]
+    subgraph E ["6. Evaluation and safety"]
+        direction LR
+        EV["acceptance.py: tests on the design's own models · media_qa.py: every output<br/>dependency_resolver.py: imports confirmed in install docs (asks 3) · pii_sanitizer.py: scrub"] ~~~ RG["regression.py<br/>reference builds after a model upgrade"]
     end
+    P["7. Package · scorecard, code, media, deck, story, PII audit<br/>stored in Cloud Storage (5), published to Drive + Slides on request, shown in the UI (back to 1)"]
+    UI -->|"customer + ask"| O
     O -->|"3. ground the ask"| MCP
-    TS -->|"4. plan, direct media, code, judge"| G
-    TS -->|"5. make media, store, publish"| API
-    O -->|"6. test, check, scrub"| EV
-    EV -. "7. scorecard + package back to the UI" .-> UI
-    TS -. "fix hints from the docs" .-> MCP
-    EV -. "imports confirmed in install docs" .-> MCP
-    MCP -. "model IDs, features, doc context" .-> R
+    MCP -->|"docs, model IDs, features"| G
+    G -->|"4 to 5: media directions, run as a background job"| MED
+    G -->|"4 to 6: design + pipeline.py"| EV
+    MED -->|"5 to 6: every clip is checked"| EV
+    EV -->|"6 to 7: scorecard rows, PASSED or retry"| P
+    EV -.- TS["Troubleshooter · troubleshooter.py · around every model call in 4, 5 and 6<br/>invalid output → re-prompt with the reason · failure → fallback model · incidents logged"]
 ```
 
 Two different lists, on purpose. **What a demo can use** is open: the planner picks services for the customer's ask from the official docs (a delivery demo gets Maps, Fleet Engine and Firebase; an analytics demo gets BigQuery), so coverage is everything Google documents. It is Google Cloud only by default: a stage on another vendor's service, a bare protocol or a client platform is accepted only when the ask names it (and the card says so); a customer's own app is modelled by the Google Cloud service it calls. **What the studio itself calls** is deliberately small, and it is a maximum, not a fixed set per build: Gemini on every build (plan, media direction, code, judge, acceptance tests, output checks); Veo, Imagen, Gemini-TTS and Lyria only when the use case's deliverables are video, image, speech or music (a data, RAG or agent demo gets its tables, JSON, agent traces and chat from Gemini as text, and no media model is called); Cloud Storage on every build (project backup); Drive + Slides only when you publish; Live and Embeddings only by the model resolver to verify a model is callable. The PII scrub, the zip, the deck and the story script are Python, no API. The studio designs, writes and evaluates the demo; it does not run the customer's services (generated code is never executed), so it needs no credentials for them.
@@ -308,7 +311,7 @@ Every build, demo output, chat change and model upgrade is evaluated. Thresholds
 | Rule | Pass |
 | :--- | :--- |
 | R1 Judge rubric: requirement coverage · grounded in official docs · code implements the design · demo shows what was asked · demo tells a story | Judge score **4/5 or better** on each row [`EVAL_MIN_JUDGE_SCORE`] |
-| R2 Model currency | Every AI stage uses the newest verified model of its tier |
+| R2 Models up to date | Every AI stage uses the newest verified model of its tier |
 | R3 Feature showcase (AI stages only) | The showcased model features are configured in the code |
 | R4 Doc citations | Every stage cites an official Google doc |
 | R5 Code validity | `pipeline.py` compiles and has a `--dry-run` entry point |
@@ -335,8 +338,8 @@ Acceptance tests run the **design** (stages + chosen models), not the generated 
 
 | Output | Critical checks | Soft checks |
 | :--- | :--- | :--- |
-| Video | language, script, lip-sync, same person, brand safe, on-screen text | matches prompt, plays the scene |
-| Image | brand safe, on-screen text | matches prompt, plays the scene |
+| Video | language, script, lip-sync, same person, brand safe | on-screen text legible, matches prompt, plays the scene |
+| Image | brand safe, on-screen text legible (a form or chart with garbled text is regenerated) | matches prompt, plays the scene |
 | Speech | language, script, brand safe | plays the scene |
 | Music | brand safe | mood, plays the scene |
 | Text | written language, matches the brief, brand safe | plays the scene |
@@ -388,4 +391,4 @@ On failure the model is **held** (not promoted) or **rolled back** to the last k
   - `engine/serve.py` warms up the model registry in `.cache/` on startup, runs `engine/project_sync.py` in a background daemon thread to restore and back up `generated_projects/` to `gs://<bucket>/_projects/` every 60 seconds, and then starts `engine/prebuild.py` (after the restore and once models are resolved) so a fresh instance fills in whatever samples the bucket did not have, without waiting for a visitor; the same thread then redraws old decks and plays the first reply of any chat demo that has none.
 * **Knobs**: `PREBUILD_SAMPLES` (default `true`) turns the pre-build off; `PREBUILD_PARALLEL` (default 4) is how many samples build at once; `python -m engine.prebuild --status` reports which samples are current, `--force` rebuilds all, `--push` uploads them to the bucket, `--decks` only redraws the decks of saved projects for a new slide layout, `--chats` only re-directs and plays the chat demos that have no first reply yet.
 
-Offline unit tests: `python -m unittest discover -s tests` (387 tests, about 5 seconds, no cloud calls). CI (`.github/workflows/ci.yml`) runs the same suite plus a `bash -n deploy.sh` syntax check on every push and pull request, with the actions pinned to commit hashes and a read-only token.
+Offline unit tests: `python -m unittest discover -s tests` (389 tests, about 5 seconds, no cloud calls). CI (`.github/workflows/ci.yml`) runs the same suite plus a `bash -n deploy.sh` syntax check on every push and pull request, with the actions pinned to commit hashes and a read-only token.

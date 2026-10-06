@@ -59,7 +59,7 @@ MAX_GROUNDING_DOCS = 8
 MAX_DOC_LOOKUPS = 6
 PLAN_KEYS = ("summary", "stages", "deliverables", "story")  # the fields of a planner blueprint
 # Rubric rows about pipeline.py. When only these fail, the design passed: the next attempt keeps it and rewrites the
-# code. Every other row (requirements, grounding, demo coverage, story, model currency, citations) judges the design.
+# code. Every other row (requirements, grounding, demo coverage, story, models up to date, citations) judges the design.
 CODE_ROWS = frozenset({"Code implements the design", "Feature showcase", "Code validity", "Dependencies",
                        "Security / PII"})
 Check = Tuple[str, bool, str, str, str]  # (metric, passed, threshold, notes, fix for the next attempt)
@@ -677,7 +677,7 @@ confirmed are listed there for review. Review generated code before running it i
         catalog = self.resolver.catalog()
         current = all(s["model"] and s["model"] == (catalog.get(s["tier"]) or {}).get("model") for s in ai)
         checks: List[Check] = [(
-            "Model currency", current, f"newest verified model per tier ({self.s.mode} mode)",
+            "Models up to date", current, f"newest verified model per tier ({self.s.mode} mode)",
             f"{len(ai)} AI stage(s) on the resolver's current models" if ai else "no AI stages in this design",
             "use only tiers that have a verified model")]
         if ai:
