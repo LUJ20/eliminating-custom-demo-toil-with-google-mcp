@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+.env
+.publish_state.json
+.drive_publish.json
+generated_projects/
+.cache/
+# Local only
+*.log
+*.lock
+.pytest_cache/
+.streamlit/secrets.toml
+docs/
