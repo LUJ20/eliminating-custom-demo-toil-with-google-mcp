@@ -122,6 +122,37 @@ def read_jsonl(path: str, limit: int = 1000) -> List[dict]:
 # A Google model ID written as text (e.g. in a plan or a brief), where a capability tier belongs instead.
 MODEL_ID_LITERAL = re.compile(r"\b(?:gemini|veo|imagen|lyria|chirp)-(?:live-|embedding-)?\d")
 
+# Product names as the official docs use them today (Agent Platform release notes, mid-2026: Vertex AI became
+# Gemini Enterprise Agent Platform, "Agent Platform" for short; Vertex AI Search is Agent Search, Agent Engine is
+# Agent Runtime, Vertex AI Studio is Agent Studio; Model Garden kept its name). Longest names first, so "Vertex AI
+# Search" is never cut to "Agent Platform Search". Technical identifiers (aiplatform.googleapis.com, roles/aiplatform.*,
+# the SDK's vertexai=True flag, doc URLs under /vertex-ai/) are unchanged and never touched: the patterns need the
+# space-separated product name.
+CURRENT_NAMES = (
+    (re.compile(r"\bGemini Enterprise Agent Platform\b", re.I), "Agent Platform"),
+    (re.compile(r"\bVertex AI Agent Builder\b", re.I), "Agent Builder"),
+    (re.compile(r"\bVertex AI Agent Engine\b", re.I), "Agent Runtime"),
+    (re.compile(r"\bVertex AI Search\b", re.I), "Agent Search"),
+    (re.compile(r"\bVertex AI Studio\b", re.I), "Agent Studio"),
+    (re.compile(r"\bVertex AI\b", re.I), "Agent Platform"),
+    (re.compile(r"\bAgent Engine\b"), "Agent Runtime"),
+)
+
+
+def current_names(text) -> str:
+    """`text` with every renamed Google product written under its current name."""
+    out = str(text or "")
+    for pattern, new in CURRENT_NAMES:
+        out = pattern.sub(new, out)
+    return out
+
+
+def is_product_doc(url: str) -> bool:
+    """True for a product documentation page; False for a blog post or an empty URL. Blog posts explain a launch,
+    product docs describe the service, so citations and stage links prefer product docs."""
+    u = (url or "").lower()
+    return bool(u) and "/blog/" not in u and not u.startswith("https://blog.")
+
 
 def slugify(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", (name or "").lower()).strip("_") or "project"

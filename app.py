@@ -1137,7 +1137,7 @@ with st.sidebar:
 resolver = ModelResolver(settings)
 if resolver.is_empty():
     with st.spinner("First run on this server: finding the newest models in Developer Knowledge MCP docs, verifying "
-                    "them on Vertex AI and reading their features (a few minutes, once per server start)..."):
+                    "them on Agent Platform and reading their features (a few minutes, once per server start)..."):
         first_run_notes = resolver.refresh(log=logger.info)
     if resolver.is_empty():
         st.warning("No Gemini model could be verified yet: " + redact(" | ".join(first_run_notes))[:300]

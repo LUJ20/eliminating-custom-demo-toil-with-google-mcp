@@ -321,7 +321,7 @@ def _after_promotion(settings: Settings, events: List[dict], log: Callable[[str]
                   promoted_tiers=tiers, regressions=regressions, rolled_back=[])
     cases = report["cases"]
     if cases and all(c.get("error") for c in cases):
-        # Every build failed: that is an outage (Vertex AI, MCP, credentials), not evidence against the new models.
+        # Every build failed: that is an outage (Agent Platform, MCP, credentials), not evidence against the new models.
         report["status"] = "inconclusive"
         log("Regression suite inconclusive: every reference build failed; no rollback, baseline unchanged")
     elif regressions:

@@ -59,8 +59,9 @@ MAX_CELL_CHARS = 240
 MAX_FEATURE_ROWS = 8
 MAX_RUBRIC_ROWS = 11
 BLANK_LAYOUT = 6
-DECK_VERSION = "5"  # the slide layout; stamped into every deck. Bump it when the slides change: saved decks made
-                    # by an older layout are then regenerated from the stored result (build_editor.refresh_deck)
+DECK_VERSION = "6"  # the slide layout; stamped into every deck. Bump it when the slides change: saved decks made
+                    # by an older layout are then regenerated from the stored result (build_editor.refresh_deck).
+                    # 6: product names as the docs use them today (Agent Platform, formerly Vertex AI)
 GREY_LINE = RGBColor(154, 160, 166)
 OUTPUT_COL_W = Inches(2.4)  # the "Demo output" column of the architecture slide
 MAX_OUTPUT_CARDS = 5        # outputs drawn in that column; the rest are counted (all are on the deliverables slide)

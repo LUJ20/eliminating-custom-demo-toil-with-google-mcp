@@ -102,7 +102,7 @@ if [ "$MODE" = "cloud-run" ]; then
   SA="gemini-mcp-studio@${PROJECT}.iam.gserviceaccount.com"
   echo "Google Slides on Cloud Run: put the Drive folder in a shared drive and add $SA as Content manager, then paste the folder link in the sidebar (or pass --drive-folder)."
 
-  step "Service account $SA (Vertex AI user, API consumer, objects in gs://$BUCKET only, token creator on itself)"
+  step "Service account $SA (Agent Platform user, API consumer, objects in gs://$BUCKET only, token creator on itself)"
   gcloud iam service-accounts describe "$SA" --project "$PROJECT" >/dev/null 2>&1 \
     || gcloud iam service-accounts create gemini-mcp-studio --project "$PROJECT" \
          --display-name "Gemini + MCP Studio on Cloud Run"

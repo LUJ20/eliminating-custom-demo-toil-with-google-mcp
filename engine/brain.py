@@ -2,8 +2,9 @@
 
 Every model function has the troubleshooter signature fn(model, location, hint) -> (result, quality) and
 raises OutputError when the answer fails validation, so the troubleshooter can re-prompt or switch model.
-The planner may use ANY Google product the MCP docs describe (Cloud, Firebase, Maps, Workspace, Android,
-Gemini). Prompts never name a model: AI stages carry a tier that the Model Resolver fills in, plus the
+The planner may use ANY Google Cloud service the MCP docs describe (data, documents, databases, serverless,
+Agent Platform for the AI stages, Firebase, Maps, Workspace APIs), under the product names the docs use today
+(engine.common.current_names); another vendor's service only when the ask names it. Prompts never name a model: AI stages carry a tier that the Model Resolver fills in, plus the
 documented features of that tier's model that the design showcases (each one backed by an official doc).
 There are no canned plans or code templates: every design and every pipeline is written by a model.
 """
@@ -13,7 +14,7 @@ import re
 from typing import Dict, List, Optional, Tuple
 
 from engine import manifest, vertex
-from engine.common import MODEL_ID_LITERAL, norm_words, slugify
+from engine.common import MODEL_ID_LITERAL, current_names, norm_words, slugify
 from engine.config import Settings
 from engine.troubleshooter import OutputError
 
@@ -90,9 +91,15 @@ def feature_used(feature: dict, code: str) -> bool:
 # ------------------------------------------------------------------------------------ planner
 def plan(settings: Settings, model: str, location: str, hint: str, *, customer: str, ask: str,
          grounding: List[dict], catalog: Dict[str, dict], max_assets: int, feedback: str = "") -> Tuple[dict, float]:
-    prompt = f"""You are the planning agent of an architecture studio. Design a production architecture on Google
-technologies for the customer's use case: Google Cloud, Firebase, Google Maps Platform, Google Workspace, Android,
-Gemini and Vertex AI, whatever fits best. Prefer managed services. Base every choice on the official docs below.
+    prompt = f"""You are the planning agent of an architecture studio. Design a production architecture on Google Cloud
+for the customer's use case. Any Google Cloud product is available: pick whatever the use case needs from the
+official docs below (data, analytics, databases, documents, messaging, serverless, APIs, security, operations,
+contact center, maps, Firebase, Workspace, and Agent Platform for the AI stages). Prefer managed services. Use the
+product names the docs use today: Vertex AI is now Agent Platform, Vertex AI Search is Agent Search, Agent Engine is
+Agent Runtime, Vertex AI Studio is Agent Studio. A stage's "service" is always a specific Google Cloud product
+(never just "Google Cloud"): never another vendor's service, self-managed open-source infrastructure or a bare
+protocol, unless the ask names it. A customer's own app (Android, iOS, web) is not a stage: model it by the Google
+Cloud service it calls (Firebase AI Logic for Gemini from a device, a Cloud Run endpoint for a backend).
 
 Customer: {customer}
 Use case: {ask}
@@ -161,7 +168,7 @@ def validate_plan(text: str, catalog: Dict[str, dict], n_docs: int, max_assets: 
     for i, s in enumerate(stages, 1):
         if not isinstance(s, dict):
             raise OutputError("each stage must be a JSON object")
-        f = {k: _clean(s.get(k)) for k in ("stage", "service", "api", "description")}
+        f = {k: current_names(_clean(s.get(k))) for k in ("stage", "service", "api", "description")}
         if not all(f.values()):
             raise OutputError(f"stage {i} is missing stage, service, api or description")
         tier = _clean(s.get("tier"), 20).lower()
@@ -184,7 +191,7 @@ def validate_plan(text: str, catalog: Dict[str, dict], n_docs: int, max_assets: 
         clean.append({**f, "stage": f"{i}. {name}", "tier": tier, "features": feats[:MAX_FEATURES],
                       "doc": doc if 1 <= doc <= n_docs else 0})
     deliverables = manifest.validate_manifest(data.get("deliverables"), catalog, max_assets)
-    return {"summary": _clean(data.get("summary"), 600), "stages": clean, "deliverables": deliverables,
+    return {"summary": current_names(_clean(data.get("summary"), 600)), "stages": clean, "deliverables": deliverables,
             "story": validate_story(data.get("story"), deliverables)}
 
 
@@ -238,8 +245,9 @@ def write_pipeline(settings: Settings, model: str, location: str, hint: str, *, 
 Stages (JSON): {spec}
 Requirements:
 - Load usecase_config.json from the script's directory. The project comes from env GOOGLE_CLOUD_PROJECT.
-- AI stages (non-empty "tier") call Vertex AI with the google-genai SDK
-  (from google import genai; genai.Client(vertexai=True, project=..., location=...)).
+- AI stages (non-empty "tier") call Agent Platform (formerly Vertex AI) with the google-genai SDK
+  (from google import genai; genai.Client(vertexai=True, project=..., location=...)); in comments and docs
+  call it Agent Platform.
   Model ID and location come ONLY from config["models"][tier]["model"] and ["location"],
   overridable by env MODEL_<TIER> (upper case).
 - Showcase features: every entry in a stage's "showcase_features" must really be configured in that stage's
@@ -309,14 +317,14 @@ def validate_pipeline(text: str) -> str:
 # ------------------------------------------------------------------------------------ judge
 def verified_facts(blueprint: dict) -> str:
     """What the studio verified today for each AI stage: the model (found in official docs via MCP and answering
-    on Vertex AI in this project) and each showcased feature with its verbatim quote from the model page.
+    on Agent Platform in this project) and each showcased feature with its verbatim quote from the model page.
     The judge's training data can predate these models, so it must not score them from memory."""
     lines = []
     for s in blueprint.get("stages", []):
         if not s.get("model"):
             continue
         lines.append(f"- {s['stage']}: model {s['model']} (location {s.get('location') or 'default'}) is listed in "
-                     "official Google docs and answered a live Vertex AI call in this project today.")
+                     "official Google docs and answered a live Agent Platform call in this project today.")
         for f in s.get("features", []):
             if isinstance(f, dict) and f.get("quote"):
                 lines.append(f"  - feature \"{f.get('name')}\" (enabled with: {f.get('how_to_enable') or 'no parameter'}); "
@@ -333,7 +341,7 @@ pipeline.py (complete file):
 {code}
 Official docs retrieved by the Developer Knowledge MCP server:
 {_docs_block(grounding, 300)}
-Verified facts (checked by the studio today against official docs and live Vertex AI calls):
+Verified facts (checked by the studio today against official docs and live Agent Platform calls):
 {verified_facts(blueprint)}
 Your training data may be older than these models. Treat the verified model IDs and features as real and current,
 and never lower a score because a model, version or feature is unfamiliar to you.

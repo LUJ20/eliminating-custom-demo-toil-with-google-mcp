@@ -306,7 +306,7 @@ def _extract_clean_token(raw: str) -> str:
 
 
 def user_token(account: str = "", fresh: bool = False) -> str:
-    """gcloud user token (Vertex AI, Developer Knowledge MCP, Cloud Storage). Cached briefly; fresh=True
+    """gcloud user token (Agent Platform, Developer Knowledge MCP, Cloud Storage). Cached briefly; fresh=True
     re-fetches (used after a 401). Thread-safe: parallel steps wait for one gcloud call instead of each
     starting their own. On Cloud Run: the service account's token from the metadata server."""
     key = account or "_default"

@@ -23,7 +23,7 @@ from engine import manifest, vertex
 from engine.config import Settings
 from engine.troubleshooter import OutputError
 
-# Inline media travels base64-encoded inside the JSON request (4/3 larger). Vertex AI caps an inline request at
+# Inline media travels base64-encoded inside the JSON request (4/3 larger). Agent Platform caps an inline request at
 # about 20 MB, so ~15 MB of raw media (clip + reference image) is the most that fits reliably.
 MAX_INLINE_BYTES = 15 * 1024 * 1024
 QA_KINDS = frozenset({"video", "image", "speech", "music"})  # media kinds: the file is attached inline

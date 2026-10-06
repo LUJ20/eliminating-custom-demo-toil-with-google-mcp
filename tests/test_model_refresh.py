@@ -70,7 +70,7 @@ class WhyUnverifiedTest(unittest.TestCase):
     def test_names_the_verification_failures(self):
         cand = entry("gemini-3.8-flash", True, (3, 8, 0))
         note = mr.ModelResolver._why_unverified({"fast": [cand]}, {"fast": [dict(cand, status="error 403")] * 2})
-        self.assertIn("Vertex AI (error 403 x2)", note)
+        self.assertIn("Agent Platform (error 403 x2)", note)
 
     def test_says_when_discovery_found_nothing(self):
         self.assertIn("Developer Knowledge MCP", mr.ModelResolver._why_unverified({"fast": []}, {}))

@@ -44,8 +44,8 @@ from engine import acceptance, brain, code_editor, deliverables as dlv, manifest
 from engine.artifact_store import ArtifactStore
 from concurrent.futures import ThreadPoolExecutor
 
-from engine.common import (MODEL_ID_LITERAL, doc_title, doc_url, file_lock, iso, read_json, redact, write_json,
-                           write_text_atomic)
+from engine.common import (MODEL_ID_LITERAL, current_names, doc_title, doc_url, file_lock, iso, read_json, redact,
+                           write_json, write_text_atomic)
 from engine.config import Settings
 from engine.deck_generator import DECK_VERSION, deck_version
 from engine.mcp_knowledge_client import McpKnowledgeClient
@@ -159,7 +159,11 @@ def load_result(settings: Settings, project_dir: str) -> Dict[str, Any]:
                          ("eval_metrics", []), ("stages", []), ("deliverables", []), ("models", {}),
                          ("score", 0.0), ("seconds", 0), ("final_status", ""), ("mode", ""), ("story", {})):
         res.setdefault(key, default)
-    res["summary"] = cfg.get("summary", res.get("summary", ""))
+    res["summary"] = current_names(cfg.get("summary", res.get("summary", "")))
+    for s in res["stages"]:  # builds saved before a product rename show the names the docs use today
+        for key in ("stage", "service", "api", "description", "doc_title"):
+            if isinstance(s.get(key), str):
+                s[key] = current_names(s[key])
     res["edits"] = cfg.get("edits") or []
     res["pii_audit"] = read_json(os.path.join(pd, AUDIT_FILE), None) or res.get("pii_audit") or {}
     res["package_files"] = sorted(n for n in (*PACKAGE, AUDIT_FILE) if os.path.isfile(os.path.join(pd, n)))
