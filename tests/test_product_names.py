@@ -19,6 +19,8 @@ class CurrentNamesTest(unittest.TestCase):
             "Agent Engine session": "Agent Runtime session",
             "Vertex AI Studio prompt": "Agent Studio prompt",
             "Vertex AI Model Garden": "Agent Platform Model Garden",  # Model Garden kept its name
+            "Gemini Enterprise Agent Platform": "Agent Platform",  # the docs' recommended short name
+            "Vertex AI Agent Builder": "Agent Builder",
         }
         for old, new in cases.items():
             with self.subTest(old):

@@ -92,14 +92,12 @@ def feature_used(feature: dict, code: str) -> bool:
 def plan(settings: Settings, model: str, location: str, hint: str, *, customer: str, ask: str,
          grounding: List[dict], catalog: Dict[str, dict], max_assets: int, feedback: str = "") -> Tuple[dict, float]:
     prompt = f"""You are the planning agent of an architecture studio. Design a production architecture on Google Cloud
-for the customer's use case, using whichever Google Cloud services the use case needs: data and analytics
-(BigQuery, Dataflow, Pub/Sub), documents (Document AI), databases (Spanner, Cloud SQL, Firestore, AlloyDB),
-serverless and APIs (Cloud Run, Cloud Functions, Apigee), security, operations and the rest of the catalog; Agent
-Platform for the AI stages (its name today for what was Vertex AI: Gemini models, Live API, Veo, Imagen, RAG Engine,
-Agent Search, Agent Runtime); and Firebase, Google Maps Platform or Google Workspace APIs when the use case calls
-for them. Prefer managed services. Base every choice on the official docs below and use the product names the docs
-use today: Agent Platform (never "Vertex AI"), Agent Search, Agent Runtime, Agent Studio. A stage's "service" is
-always a Google Cloud product: never another vendor's service, self-managed open-source infrastructure or a bare
+for the customer's use case. Any Google Cloud product is available: pick whatever the use case needs from the
+official docs below (data, analytics, databases, documents, messaging, serverless, APIs, security, operations,
+contact center, maps, Firebase, Workspace, and Agent Platform for the AI stages). Prefer managed services. Use the
+product names the docs use today: Vertex AI is now Agent Platform, Vertex AI Search is Agent Search, Agent Engine is
+Agent Runtime, Vertex AI Studio is Agent Studio. A stage's "service" is always a specific Google Cloud product
+(never just "Google Cloud"): never another vendor's service, self-managed open-source infrastructure or a bare
 protocol, unless the ask names it. A customer's own app (Android, iOS, web) is not a stage: model it by the Google
 Cloud service it calls (Firebase AI Logic for Gemini from a device, a Cloud Run endpoint for a backend).
 

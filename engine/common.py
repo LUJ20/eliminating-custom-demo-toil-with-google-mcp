@@ -129,6 +129,8 @@ MODEL_ID_LITERAL = re.compile(r"\b(?:gemini|veo|imagen|lyria|chirp)-(?:live-|emb
 # the SDK's vertexai=True flag, doc URLs under /vertex-ai/) are unchanged and never touched: the patterns need the
 # space-separated product name.
 CURRENT_NAMES = (
+    (re.compile(r"\bGemini Enterprise Agent Platform\b", re.I), "Agent Platform"),
+    (re.compile(r"\bVertex AI Agent Builder\b", re.I), "Agent Builder"),
     (re.compile(r"\bVertex AI Agent Engine\b", re.I), "Agent Runtime"),
     (re.compile(r"\bVertex AI Search\b", re.I), "Agent Search"),
     (re.compile(r"\bVertex AI Studio\b", re.I), "Agent Studio"),

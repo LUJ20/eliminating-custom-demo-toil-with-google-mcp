@@ -39,12 +39,13 @@ flowchart LR
     U["Use case"] --> O["Orchestrator (plain Python, fixed steps)"]
     O --> B["Gemini: plan, design, code, judge"]
     O --> K["Developer Knowledge MCP: official Google docs"]
-    O --> T["Google APIs: Agent Platform media models (Imagen, Veo, TTS, Lyria, Live), Cloud Storage, Drive + Slides"]
+    O --> T["APIs the studio calls to make the kit: Agent Platform models (Gemini; Imagen, Veo, TTS, Lyria, Live for media), Cloud Storage, Drive + Slides"]
     O --> E["Evals: acceptance tests, judges, output checks, privacy audit"]
     E --> P["Package: architecture, code, media, deck, scorecard"]
+    P -.-> A["The designed architecture itself: any Google Cloud product the docs support (BigQuery, Document AI, Pub/Sub, Maps, Firebase, Contact Center AI, Spanner, ...)"]
 ```
 
-**MCP for knowledge, direct APIs for execution.** The MCP server supplies official docs (grounding, model discovery, citations); the orchestrator calls Google APIs itself; models come from the self-upgrading resolver. No agent framework runs the studio: the steps are fixed, so code decides, not the model. ADK appears only inside generated demos that need an agent (support agents, voice concierges).
+**MCP for knowledge, direct APIs for execution.** The MCP server supplies official docs (grounding, model discovery, citations); the orchestrator calls Google APIs itself; models come from the self-upgrading resolver. No agent framework runs the studio: the steps are fixed, so code decides, not the model. ADK appears only inside generated demos that need an agent (support agents, voice concierges). Two lists not to confuse: the APIs above are what the **studio** calls; the **architecture it designs** for a use case can use any Google Cloud product (it is written into the code and the deck, and its outputs are demonstrated with Gemini and the media models rather than by deploying the customer's stack).
 
 - **No hard-coded models**: the studio finds the newest models in Google's docs, verifies them in your project,
   tests them on a golden set and rolls back automatically if quality drops.
