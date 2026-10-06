@@ -2,7 +2,8 @@
 
 Turns any customer use case into a grounded Google architecture, working code, the demo outputs the ask calls
 for (video, images, speech, music, text, chat, data results and agent runs: planned in a manifest and generated
-by the newest verified models), an eval scorecard and an editable deck. Grounding: Google Developer Knowledge MCP server. Models: the Model Resolver sub-agent
+by the newest verified models), an eval scorecard and the bill of materials: the reference architecture deck, the story
+script and four technical documents. Grounding: Google Developer Knowledge MCP server. Models: the Model Resolver sub-agent
 (newest verified, never hard-coded); their features are read from each model's official page. Failures:
 the Troubleshooter agent.
 
@@ -20,9 +21,12 @@ import threading
 
 import streamlit as st
 
+from engine import bom as bom_mod
 from engine import build_editor
 from engine import charts
+from engine import deck_generator
 from engine import deliverables as dlv
+from engine import modality_eval
 from engine import manifest
 from engine import prebuild
 from engine import regression
@@ -444,6 +448,7 @@ def _asset_view(project_dir: str, d: dict, a: dict, build_id: str, settings: Set
         if a.get("carried_over"):
             st.caption("Reused unchanged from the previous version")
         render_qa(a.get("qa") or {})
+        render_metrics(a.get("metrics") or {})
         if a.get("note"):
             st.caption(md_escape(a["note"]))
         if a.get("script"):
@@ -488,6 +493,22 @@ def _media_panel(project_dir: str, did: str, build_id: str, settings: Settings) 
     for box, a in zip(st.tabs(labels) if len(assets) > 1 else [st.container()], assets):
         with box:
             _asset_view(project_dir, d, a, build_id, settings)
+
+
+def render_metrics(result: dict) -> None:
+    """The measured layer (engine/modality_eval.py): one quiet line per output, 'Metrics: n/m within target', with
+    the market-standard metric table (metric, standard, value, target, result) in a collapsed expander. Always
+    drawn when the output has metrics: measured values are the evidence a viewer asks for."""
+    line = modality_eval.line(result)
+    if not line:
+        return
+    with st.expander(line):
+        st.dataframe(modality_eval.rows(result), hide_index=True, width="stretch")
+        gaps = result.get("not_measured") or ""
+        if gaps:
+            st.caption(f"Not measured here: {gaps}.")
+        if result.get("error"):
+            st.caption(f"Measurement stopped early: {md_escape(str(result['error']))}")
 
 
 def render_qa(qa: dict) -> None:
@@ -538,6 +559,7 @@ def render_chat(res: dict, settings: Settings, d: dict) -> None:
                 _asset_view(res["project_dir"], d, a, res["build_id"], settings)
                 continue
             render_qa(a.get("qa") or {})
+            render_metrics(a.get("metrics") or {})
             key = f"chat_{res['build_id']}_{d['id']}_{a['label']}_{a.get('file', '')}"
             played = dlv.chat_reply(res["project_dir"], a)
             seed = ([{"role": "user", "text": a.get("script", "")},
@@ -695,11 +717,17 @@ def render_rubric(res: dict) -> None:
         + f" · {len(attempts)} attempt(s)" + (f" · acceptance tests {acc['value']}" if acc.get("value") else "")
     st.markdown(line)
     st.caption("BEST EFFORT means the best attempt missed at least one threshold; the Why column says which and why. "
-               "Rows marked judge are scored 1-5 by a Gemini model, the others are computed by the studio.")
+               "Rows marked judge are scored 1-5 by a Gemini model, the others are computed by the studio; the "
+               "Output metrics row is the measured layer (CLIP-style alignment, VBench-style consistency, EBU R128, "
+               "ASR word error rate, Agent Platform evaluation service), advisory and outside the score.")
     rows = list(res["eval_metrics"])
-    quality = dlv.quality_row(dlv.load_status(res["project_dir"])) if res.get("project_dir") else None
+    status = dlv.load_status(res["project_dir"]) if res.get("project_dir") else None
+    quality = dlv.quality_row(status)
     if quality:  # live: clips finish after the build is scored, so this row is read from the job status
         rows.append(quality)
+    measured = modality_eval.metrics_row(status)
+    if measured:  # the measured layer: market-standard metrics per output modality
+        rows.append(measured)
     st.dataframe([{"Check": m["metric"], "Result": m["value"], "Threshold": m["threshold"],
                    "Pass": "yes" if m["pass"] else "no", "Why": " ".join(str(m.get("notes") or "").split())}
                   for m in rows], hide_index=True, width="stretch")
@@ -763,12 +791,48 @@ def render_story_script(res: dict, settings: Settings, pub: dict, path: str, doc
         st.iframe(doc, height=640)  # app-made HTML: every model/user value in it is escaped, no scripts
 
 
+def ensure_bom(res: dict, settings: Settings) -> bool:
+    """Give a clean build without a bill-of-materials narrative (saved before it existed, or its writer could not
+    run) one, once per session: build_editor.add_bom makes one planner-tier call and rewrites SKILL.md, the zip, the
+    deck and the result file in place. A failure is logged, never shown: the documents and the deck render from the
+    facts and say where the narrative is missing. -> True when the narrative was added now."""
+    key = f"bom_tried_{res['build_id']}"
+    if st.session_state.get(key) or bom_mod.done(res.get("bom")) or build_editor.is_dirty(res["project_dir"]):
+        return False
+    st.session_state[key] = True  # one attempt per build and session, not one per rerun
+    try:
+        with st.spinner("Writing the bill of materials…"):
+            return bool(build_editor.add_bom(settings, res))
+    except Exception as e:  # UI boundary: the page renders without the narrative
+        logger.warning("bill of materials of %s not written: %s", res.get("slug"), redact(str(e))[:200])
+        return False
+
+
+def bom_docs(res: dict, deck_url: str) -> tuple:
+    """({doc key: path}, sha256 of the four documents) of the build's bill of materials, written under
+    <project>/bom/. Rebuilt on every rerun (string building only); write_docs leaves a file whose content did not
+    change untouched, so nothing re-uploads. `deck_url` is the deck's Google Slides link from the last publish, which
+    the documents cite (empty before the first publish: the link fills in on the next rerun)."""
+    status = dlv.load_status(res["project_dir"])
+    docs = bom_mod.render_docs(res, status, deck_url)
+    sha = hashlib.sha256("\n".join(docs[k] for k in sorted(docs)).encode("utf-8")).hexdigest()
+    try:
+        paths = bom_mod.write_docs(res, status, deck_url)
+    except OSError:
+        logger.exception("could not write the bill of materials documents")
+        paths = {}
+    return {k: p for k, p in paths.items() if os.path.isfile(p)}, sha
+
+
 def ensure_published(res: dict, settings: Settings) -> tuple:
-    """Publish the build's files once per build, and again only when the story script changed (scripts written
-    later, or a Save that published without it) or the deck was regenerated for a new slide layout; uploads are
-    hash-based, so only the changed file goes up. -> (publish info or {}, story script path, story script html, dirty)."""
+    """Publish the build's files once per build, and again only when the story script or a bill-of-materials
+    document changed (scripts written later, the narrative added in the background, or a Save that published
+    without them), the narrative was just added, or the deck was regenerated for a new slide layout; uploads are
+    hash-based, so only the changed file goes up. -> (publish info or {}, story script path, story script html,
+    dirty, {BOM doc key: path})."""
     key = f"publish_{res['build_id']}"
     dirty = build_editor.is_dirty(res["project_dir"])
+    added = ensure_bom(res, settings)
     try:  # a saved demo built before the current slides: redraw its deck from the stored result (no model call)
         redrawn = build_editor.refresh_deck(settings, res)
     except Exception as e:  # the old deck still opens; say so in the log, not on the page
@@ -776,15 +840,17 @@ def ensure_published(res: dict, settings: Settings) -> tuple:
         redrawn = False
     story_file, story_html, story_sha = story_script(res)
     pub = st.session_state.get(key)
-    stale = pub is not None and (pub.get("story_sha") != story_sha or redrawn)
+    doc_paths, docs_sha = bom_docs(res, ((pub or {}).get("deck") or {}).get("edit_url", ""))
+    content_sha = f"{story_sha}:{docs_sha}"  # the story script and the four documents, together
+    stale = pub is not None and (pub.get("story_sha") != content_sha or redrawn or added)
     if not dirty and (pub is None or stale):
         files = [f for f in (res["deck_path"], res["zip_path"], os.path.join(res["project_dir"], AUDIT_FILE),
-                             story_file) if f and os.path.exists(f)]
+                             story_file, *doc_paths.values()) if f and os.path.exists(f)]
         with st.spinner(f"Publishing to {'Google Drive' if settings.use_drive else 'Cloud Storage'}..."):
             pub = ArtifactStore(settings).publish(res["slug"], files)
-        pub["story_sha"] = story_sha
+        pub["story_sha"] = content_sha
         st.session_state[key] = pub
-    return pub or {}, story_file, story_html, dirty
+    return pub or {}, story_file, story_html, dirty, doc_paths
 
 
 def slides_hint(settings: Settings) -> str:
@@ -799,20 +865,32 @@ def slides_hint(settings: Settings) -> str:
     return shared.strip()  # a Drive folder is set but the deck did not reach Slides: on Cloud Run, this is why
 
 
-def render_downloads(res: dict, settings: Settings, pub: dict, story_file: str, story_html: str, dirty: bool) -> None:
-    st.subheader("6. Story script and architecture deck")
-    if dirty and not pub:
-        st.info("This build has unsaved chat changes. Save them (right panel) to publish the updated deck.")
-    if pub.get("fallback_reason"):
-        st.warning(redact(pub["fallback_reason"])[:400])
-    if pub.get("error"):
-        st.warning(f"Publishing failed, downloads below still work: {redact(pub['error'])[:300]}")
-    elif pub.get("location"):
-        st.caption(f"Published to {pub['location']}")
-    render_story_script(res, settings, pub, story_file, story_html)
-    st.markdown("#### Architecture deck")
-    st.caption("Five editable slides built from the design, the demo plan and the scorecard, with the talk track in "
-               "the speaker notes.")
+@st.cache_data(show_spinner=False)
+def deck_template_tag(path: str, signature: tuple) -> str:
+    """deck_generator.deck_template for the deck file at `path`, read once per (mtime, size): the app asks on
+    every rerun and opening a .pptx is not free."""
+    return deck_generator.deck_template(path)
+
+
+def deck_caption(deck_path: str) -> str:
+    """What the deck is, and what to do when this server draws it on the blank fallback instead of the template."""
+    text = ("Four slides on the Google Cloud reference architecture template (cover, architecture, design "
+            "considerations, applicability).")
+    try:
+        st_ = os.stat(deck_path)
+        tag = deck_template_tag(deck_path, (st_.st_mtime_ns, st_.st_size))
+    except OSError:
+        tag = ""
+    if tag == deck_generator.BLANK_TAG:
+        text += (" Template not installed on this server: run "
+                 "`python -m engine.bom_template --fetch \"<slides url>\" --push`")
+    return text
+
+
+def render_deck_panel(res: dict, settings: Settings, pub: dict, dirty: bool) -> None:
+    """The reference architecture deck: download, Google Slides (or the published folder) and the slide player."""
+    st.markdown("**Reference architecture deck**")
+    st.caption(deck_caption(res["deck_path"]))
     slides_url = (pub.get("deck") or {}).get("edit_url", "")
     b1, b2 = st.columns(2)
     with b1:
@@ -830,6 +908,52 @@ def render_downloads(res: dict, settings: Settings, pub: dict, story_file: str, 
     if hint:
         st.caption(hint)
     st.iframe(render_presentation_player(res["deck_path"], gslides_url=slides_url or None, height=520), height=520)
+
+
+def render_bom_docs(res: dict, pub: dict, doc_paths: dict) -> None:
+    """The four Global Solutions documents as a plain list: each opens its Google Doc when the publish state has
+    one (Drive mode), else downloads the local HTML; a one-line blurb under each. A document not written yet (a
+    fresh project, or add_bom failed) is listed by name only, so the page always renders."""
+    st.markdown("**Technical documents**")
+    if not bom_mod.done(res.get("bom")):
+        st.caption("The narrative is still being written in the background; rebuild or reload in a minute.")
+    published = pub.get("files") or {}
+    for key, *_ in bom_mod.DOCS:
+        title, blurb = bom_mod.doc_title(key), bom_mod.doc_blurb(key)
+        path = doc_paths.get(key, "")
+        name = os.path.basename(path) if path else ""
+        url = str(published.get(name, "")) if name else ""
+        if url.startswith(GDOC_PREFIX):
+            st.link_button(title, url, width="stretch")  # docs.google.com URL built from a validated Drive file id
+        elif path and os.path.isfile(path):
+            with open(path, "rb") as f:
+                st.download_button(title, data=f.read(), file_name=name, mime="text/html", width="stretch",
+                                   key=f"dl_bom_{key}_{res['build_id']}")
+        else:
+            st.markdown(f"**{title}**")
+        st.caption(blurb)
+
+
+def render_downloads(res: dict, settings: Settings, pub: dict, story_file: str, story_html: str, dirty: bool,
+                     doc_paths: dict) -> None:
+    """Section 6, the bill of materials: the story script, then the demo assets side by side: the reference
+    architecture deck (left) and the four technical documents (right)."""
+    st.subheader("6. Bill of materials: reference architecture deck, story script and technical documents")
+    if dirty and not pub:
+        st.info("This build has unsaved chat changes. Save them (right panel) to publish the updated deck.")
+    if pub.get("fallback_reason"):
+        st.warning(redact(pub["fallback_reason"])[:400])
+    if pub.get("error"):
+        st.warning(f"Publishing failed, downloads below still work: {redact(pub['error'])[:300]}")
+    elif pub.get("location"):
+        st.caption(f"Published to {pub['location']}")
+    render_story_script(res, settings, pub, story_file, story_html)
+    st.markdown("#### Demo assets")
+    deck_col, docs_col = st.columns([3, 2], gap="medium")
+    with deck_col:
+        render_deck_panel(res, settings, pub, dirty)
+    with docs_col:
+        render_bom_docs(res, pub, doc_paths)
 
 
 # ---------------------------------------------------------------------------------------------- build chat
@@ -1290,12 +1414,12 @@ if "solution_result" in st.session_state:
         st.markdown("---")
         render_demo_output(res, settings)
         st.markdown("---")
-        pub, story_file, story_html, dirty = ensure_published(res, settings)
+        pub, story_file, story_html, dirty, doc_paths = ensure_published(res, settings)
         render_package(res, pub, dirty, settings)
         st.markdown("---")
         render_rubric(res)
         st.markdown("---")
         render_well_architected(res)
         st.markdown("---")
-        render_downloads(res, settings, pub, story_file, story_html, dirty)
+        render_downloads(res, settings, pub, story_file, story_html, dirty, doc_paths)
 

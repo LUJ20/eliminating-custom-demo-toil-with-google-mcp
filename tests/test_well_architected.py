@@ -1,7 +1,7 @@
 """Well-Architected review (engine/well_architected.py): Framework pages from MCP (Framework pages first, no
 duplicates, capped, cached), strict validation of the reviewer's answer, the readiness gate, the package markdown,
-the deck slide, and the synthesizer integration (advisory: never changes the score; off switch; MCP outage shows
-'Not reviewed')."""
+the design considerations slide of the deck, and the synthesizer integration (advisory: never changes the score; off
+switch; MCP outage shows 'Not reviewed')."""
 import copy
 import dataclasses
 import json
@@ -168,25 +168,33 @@ class MarkdownAndDeckTest(unittest.TestCase):
         self.assertIn("**Not reviewed**: MCP down", waf.to_markdown(waf.unavailable("MCP down"), "Acme"))
         self.assertIn("**Not reviewed**: the review did not run for this build", waf.to_markdown(None, "Acme"))
 
-    def test_deck_gets_a_review_slide_only_when_the_build_has_one(self):
+    def test_deck_shows_the_review_on_the_design_considerations_slide(self):
         tmp = os.path.join(os.path.dirname(__file__), ".tmp_waf_deck.pptx")
         self.addCleanup(lambda: os.path.exists(tmp) and os.remove(tmp))
         rev = waf.validate_review(answer(scores=(5, 2, 5, 5, 5)), docs())
-        for review, slides in ((None, 5), (rev, 6), (waf.unavailable("MCP down"), 6)):
+        for review in (None, rev, waf.unavailable("MCP down")):
             with self.subTest(review=(review or {}).get("status")):
                 dg.build_usecase_deck(tmp, customer="Acme", ask="a", summary="s", stages=BLUEPRINT["stages"], rubric=[],
                                       attempts=[], files=["pipeline.py"], whats_new=[], mode="live", deliverables=[],
                                       score=90.0, final_status="PASSED", well_architected=review)
                 prs = pptx.Presentation(tmp)
-                self.assertEqual(len(prs.slides), slides)
-                if review:
-                    texts = "\n".join(sh.text_frame.text for sh in prs.slides[4].shapes if sh.has_text_frame)
-                    self.assertIn("Well-Architected review for Acme", texts)
-                    self.assertIn(review["verdict"], texts)
-                    if review["status"] == "done":
-                        table = next(sh.table for sh in prs.slides[4].shapes if sh.has_table)
-                        self.assertEqual(len(table.rows), 1 + len(waf.PILLARS))
-                        self.assertEqual(table.cell(2, 1).text, "2/5")
+                self.assertEqual(len(prs.slides), 4)  # cover, architecture, design considerations, applicability
+                slide = prs.slides[2]
+                texts = "\n".join(sh.text_frame.text for sh in slide.shapes if sh.has_text_frame)
+                table = next(sh.table for sh in slide.shapes if sh.has_table)
+                self.assertEqual(len(table.rows), 4)  # header + Reliability, Cost Optimization, Security
+                self.assertEqual([table.cell(i, 0).text for i in (1, 2, 3)], ["Reliability", "Cost Optimization", "Security"])
+                notes = slide.notes_slide.notes_text_frame.text
+                if review and review["status"] == "done":
+                    self.assertIn(f"Well-Architected review: {review['verdict']}", texts)
+                    self.assertIn("Reliability finding.", table.cell(1, 1).text)
+                    self.assertEqual(table.cell(1, 2).text, "5/5 in the review")
+                    self.assertEqual(table.cell(3, 2).text, "2/5 in the review")  # security scored 2
+                    self.assertIn("Security, privacy and compliance: 2/5.", notes)
+                else:  # no review: the rows say the narrative comes with a rebuild, the subtitle stays generic
+                    self.assertNotIn("Well-Architected review:", texts)
+                    self.assertIn("Written when the demo is rebuilt", table.cell(1, 1).text)
+                    self.assertEqual(table.cell(1, 2).text, "-")
 
 
 class SynthesizerIntegrationTest(OfflineTestCase):
@@ -316,7 +324,7 @@ class SavedBuildBackfillTest(OfflineTestCase):
             self.assertIn("pipeline.py", zf.namelist())
         deck = os.path.join(folder, f"{slug}_architecture_deck.pptx")
         self.assertEqual(deck_version(deck), DECK_VERSION)
-        self.assertEqual(len(pptx.Presentation(deck).slides), 6)
+        self.assertEqual(len(pptx.Presentation(deck).slides), 4)
         self.assertFalse(versions.is_dirty(folder))  # recorded as the saved version: no "Unsaved changes" row
         loaded = build_editor.load_result(self.settings, folder)
         self.assertIn(waf.REVIEW_FILE, loaded["package_files"])

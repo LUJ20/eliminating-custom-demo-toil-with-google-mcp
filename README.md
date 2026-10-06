@@ -19,10 +19,16 @@ scanned forms"*. The studio returns:
   (4 to 32 seconds: a 16-second ad is two Veo shots, each continuing the last frame of the one before, joined into
   one file) and films what the brief names (the product in an ad, a presenter only when the ask wants one)
 - **Story**: a hero, a challenge and a payoff, plus a presenter script
-- **Deck**: six editable slides (story, the same architecture flow as the app's diagram with the demo outputs
-  attached, deliverables, scorecard, Well-Architected review, package) with the talk track in the speaker notes;
-  PowerPoint, or Google Slides when a Drive folder is set (on Cloud Run: a shared-drive folder)
-- **Scorecard**: acceptance tests, judge scores and a privacy audit of the package
+- **Bill of materials, complete for every custom demo**: a 4-slide deck on the Google Cloud reference
+  architecture template (cover, architecture with the demo outputs attached, design considerations by
+  Well-Architected pillar, when to use / anti-patterns) with the talk track in the speaker notes, plus the four
+  Global Solutions documents: technical guidance, demo delivery guide and clickpath, proof-of-concept best
+  practices and runbook, and the AI agents and skills guide with a ready `SKILL.md` (also inside the code
+  package). PowerPoint and HTML locally; Google Slides and Google Docs when a Drive folder is set (on Cloud Run:
+  a shared-drive folder). The app shows the deck embedded with the four documents linked beside it
+- **Scorecard**: acceptance tests, judge scores, a privacy audit of the package, the reviewer's verdict on every
+  output and the **measured, market-standard metrics per output modality** (CLIP-style alignment, VBench-style
+  consistency, EBU R128 loudness, ASR word error rate, Agent Platform evaluation-service metrics)
 - **Well-Architected review**: the design scored 1–5 on the five pillars of the Google Cloud Well-Architected
   Framework, with one finding and one recommendation per pillar, each citing the Framework page it comes from; the
   verdict is a design-review readiness gate ("Ready for design review" when every pillar scores 3 or more)
@@ -139,6 +145,9 @@ This is a demo deployment, not a production service.
   each); the container ships ffmpeg to join the shots, a laptop needs it installed or films the first shot only.
 - Generated code is checked by evals but never executed by the studio. Run it in your own project before you
   show it live.
+- Per build on top of the plan, code and judge calls: one planner-tier call for the bill of materials, and the
+  measured metrics per output (image: 2 embedding calls; video: 9; speech: one fast-tier transcription; written
+  and data outputs: 3–5 evaluation-service calls). Saved demos are measured once in the background.
 
 To remove the app: `gcloud run services delete gemini-mcp-studio --region us-central1`.
 
@@ -420,6 +429,30 @@ The review is advisory: it never changes the build score or triggers a retry. Ju
 
 A critical failure regenerates the output with the findings, up to 2 more rounds [`MEDIA_RETRIES`], best kept (a chat is played again with the findings appended to its system instruction). A clip or image that fails **matches the prompt and brief** is not refilmed from the same prompt: the media director writes the prompt (and each shot's script) again with the previous prompt and the reviewer's finding, then it is made and checked again. The soft **length** check and **plays the scene** never fail an output; they lower its score and are listed in the scorecard notes ("not the planned length", "off-scene"). At plan time, `manifest.py` also checks that every declared visual input has its example image listed before the deliverable that reads it (a plan that breaks this is sent back to the planner). The live **Demo output quality** row = all outputs pass their critical checks; with the sidebar switch **Show output checks** on, each output also shows one collapsed "Checks: n/m passed" line with the reviewer's summary (off by default; a failed check still highlights that output's Regenerate button).
 
+#### 4.5a Measured output metrics — market-standard metrics per modality (`engine/modality_eval.py`)
+
+Next to the reviewer's checks (the LLM-as-a-judge layer above), every ready output is **measured** with the metric the industry uses for its modality. Nothing is simulated: a value is read from the file, computed from embeddings, or returned by the Agent Platform evaluation service; what this server cannot measure is listed as "not measured" with the reason.
+
+| Modality | Metric (standard) | Target |
+| :--- | :--- | :--- |
+| Image | Text–image alignment, CLIP-score protocol: cosine of the prompt and the image in the multimodal embedding space (`multimodalembedding@001`), judged as zero-shot retrieval — the image ranks its own prompt first among six unrelated captions (R@1) · resolution and aspect | R@1 · long side ≥ 1024 px, 16:9 |
+| Video | The same alignment on 8 evenly sampled frames · temporal consistency (VBench subject/background protocol: mean cosine of consecutive frame embeddings; one scene change allowed per joined shot) · temporal flicker (ffmpeg `signalstats` YDIF, report only) · black frames (`blackdetect`) · frozen frames (`freezedetect`) · duration against the plan, frame rate, resolution (ffprobe) | R@1 · ≥ 0.80 · report · 0 s · 0 s · plan ± 1.5 s, ≥ 23.9 fps, ≥ 720p |
+| Speech | EBU R128 / ITU-R BS.1770 integrated loudness, loudness range (report), true peak (ffmpeg `ebur128`) · silence lead / tail / longest gap (`silencedetect`) · intelligibility as ASR word error rate: a `fast`-tier model transcribes the clip and the transcript is aligned with the script (Levenshtein over words) | −24 to −14 LUFS · ≤ −1 dBTP · ≤ 1 s / ≤ 1.5 s / ≤ 2 s · WER ≤ 10 % |
+| Music | EBU R128 integrated loudness, true peak · dropouts (internal silence) · duration (report) | −24 to −12 LUFS · ≤ −1 dBTP · no gap > 2 s |
+| Text | Agent Platform evaluation service (`evaluateInstances`) pointwise metrics: fluency, coherence (1–5), safety (0/1), fulfillment against the generation prompt (1–5) | ≥ 4 · ≥ 4 · 1 · ≥ 4 |
+| Chat (first reply) | fluency, coherence, safety, fulfillment against the system instruction + opener, groundedness against the system context (0/1) | ≥ 4 · ≥ 4 · 1 · ≥ 4 · 1 |
+| Table / JSON result | JSON contract (code) · fluency · safety · fulfillment | valid · ≥ 4 · 1 · ≥ 4 |
+| Agent trace | JSON contract (code) · tool-call validity (`tool_call_valid`) · safety · fulfillment | valid · 1 · 1 · ≥ 4 |
+
+| Rule | Pass |
+| :--- | :--- |
+| O1 Measured, never simulated | Every value comes from the file (ffprobe / ffmpeg), the multimodal embedding model, a transcription, or the evaluation service; a failed measurement reads "not measured: reason", never a number |
+| O2 Standard protocols | CLIP retrieval R@1 against unrelated captions (not the demo's sibling briefs, which share the subject); VBench consistency on consecutive frames; EBU R128 loudness and true peak; WER on normalised words; evaluation-service metrics on their published scales |
+| O3 Advisory | Measured after the reviewer's verdict: never delays a usable output, never regenerates it, never changes the build score. Shown as the live scorecard row **Output metrics (market standard)** and as a "Metrics: n/m within target" line with the metric table under each output |
+| O4 Honest gaps | Aesthetic predictors (NIMA, LAION), non-intrusive speech MOS (UTMOS, NISQA, DNSMOS), CLAP text–music alignment and VBench motion smoothness need model weights the Cloud Run image does not ship: listed as not measured, per modality |
+
+Saved demos built before this layer existed are measured in the background on the first page load (`engine/prebuild.py`, with the review and BOM sweep). Switches: [`OUTPUT_METRICS`] (default on), [`MULTIMODAL_EMBEDDING_MODEL`] (default `multimodalembedding@001`, a regional Agent Platform model, not a resolver tier). Cost per output: image 2 embedding calls (+6 cached distractor captions, once per process); video 9 (+6 once); speech one `fast`-tier transcription; text / chat / data 3–5 evaluation-service calls, run in parallel. Tests: `tests/test_modality_eval.py`.
+
 #### 4.6 Chat — is the answer or change right? (`engine/build_editor.py`)
 
 | Rule | Pass |
@@ -463,4 +496,4 @@ On failure the model is **held** (not promoted) or **rolled back** to the last k
   - `engine/serve.py` warms up the model registry in `.cache/` on startup, runs `engine/project_sync.py` in a background daemon thread to restore and back up `generated_projects/` to `gs://<bucket>/_projects/` every 60 seconds, and then starts `engine/prebuild.py` (after the restore and once models are resolved) so a fresh instance fills in whatever samples the bucket did not have, without waiting for a visitor; the same thread then redraws old decks, adds the Well-Architected review to saved demos that predate it, and plays the first reply of any chat demo that has none.
 * **Knobs**: `PREBUILD_SAMPLES` (default `true`) turns the pre-build off; `PREBUILD_PARALLEL` (default 4) is how many samples build at once; `python -m engine.prebuild --status` reports which samples are current, `--force` rebuilds all, `--push` uploads them to the bucket, `--decks` only redraws the decks of saved projects for a new slide layout, `--chats` only re-directs and plays the chat demos that have no first reply yet, `--reviews` only adds the Well-Architected review to saved projects that have none.
 
-Offline unit tests: `python -m unittest discover -s tests` (456 tests, about 5 seconds, no cloud calls). CI (`.github/workflows/ci.yml`) runs the same suite plus a `bash -n deploy.sh` syntax check on every push and pull request, with the actions pinned to commit hashes and a read-only token.
+Offline unit tests: `python -m unittest discover -s tests` (489 tests, about 7 seconds, no cloud calls). CI (`.github/workflows/ci.yml`) runs the same suite plus a `bash -n deploy.sh` syntax check on every push and pull request, with the actions pinned to commit hashes and a read-only token.

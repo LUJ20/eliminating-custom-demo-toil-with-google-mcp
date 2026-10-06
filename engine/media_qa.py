@@ -19,6 +19,10 @@ critically without asking the reviewer, so the job regenerates it with the reaso
 
 A video's "length" check is programmatic too (with_length()): the job reads the clip's real length from the file
 and compares it with the planned length; a short or long clip lowers the score and is reported, never failed.
+
+This module is the LLM-as-a-judge layer. The measured layer, engine/modality_eval.py, adds the market-standard
+metrics per modality (CLIP-style alignment, VBench-style consistency, EBU R128 loudness, ASR word error rate,
+the Agent Platform evaluation service) after the verdict here; those metrics are advisory and never regenerate.
 """
 import base64
 import json

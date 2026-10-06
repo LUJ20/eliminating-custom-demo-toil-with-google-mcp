@@ -93,6 +93,10 @@ class Settings:
     acceptance_min_pass: float = 0.8         # share of acceptance tests that must pass (and no safety failure)
     acceptance_max_tests: int = 6            # acceptance tests planned per build (3 to this many)
     well_architected_enabled: bool = True    # review each design against the Well-Architected Framework pillars
+    bom_enabled: bool = True                 # write the bill-of-materials narrative, deck and documents (engine/bom.py)
+    bom_template_path: str = ""              # the reference architecture template .pptx (engine/bom_template.py)
+    output_metrics: bool = True              # measure market-standard metrics on every ready output (engine/modality_eval.py)
+    multimodal_embedding_model: str = "multimodalembedding@001"  # image / frame / prompt embeddings for CLIP-style alignment
     regression_on_upgrade: bool = True       # re-build the reference use cases after a model promotion; roll back on a regression
     generate_media: bool = True              # False: plan deliverables but never generate them (regression builds)
     cache_dir: str = os.path.join(ROOT, ".cache")                   # registry, telemetry, incidents, publish state
@@ -293,6 +297,11 @@ def get_settings() -> Settings:
         acceptance_min_pass=min(1.0, max(0.0, _env_number("ACCEPTANCE_MIN_PASS", 0.8))),
         acceptance_max_tests=min(12, max(3, _env_number("ACCEPTANCE_MAX_TESTS", 6))),
         well_architected_enabled=_env_flag("WELL_ARCHITECTED_REVIEW", True),
+        bom_enabled=_env_flag("BOM_ASSETS", True),
+        bom_template_path=os.environ.get("BOM_TEMPLATE_PATH", "").strip(),
+        output_metrics=_env_flag("OUTPUT_METRICS", True),
+        multimodal_embedding_model=(os.environ.get("MULTIMODAL_EMBEDDING_MODEL", "").strip()
+                                    or Settings.multimodal_embedding_model),
         regression_on_upgrade=_env_flag("REGRESSION_ON_UPGRADE", True),
         policy=Policy(**{f.name: _env_number(f.name.upper(), f.default) for f in dataclasses.fields(Policy)}),
     )

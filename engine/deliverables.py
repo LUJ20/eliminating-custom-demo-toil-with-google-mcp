@@ -53,7 +53,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Dict, List, Optional, Tuple
 
-from engine import brain, manifest, media, media_qa, vertex
+from engine import brain, manifest, media, media_qa, modality_eval, vertex
 from engine.common import file_lock, iso, read_json, redact, slugify, write_json
 from engine.config import Settings
 from engine.mcp_knowledge_client import McpKnowledgeClient
@@ -70,7 +70,7 @@ FOLDER = "deliverables"
 SPEC_KEYS = ("kind", "title", "brief", "tier", "model", "start_from")
 STORY_KEYS = ("beat", "scene")  # hashed only when set, so builds made before stories keep their clips
 LENGTH_KEYS = ("seconds", "input_of")  # likewise: a video length other than the default, an input example's target
-CARRY_KEYS = ("prompt", "script", "shots", "file", "mime", "model", "seconds", "length_s", "note", "qa")
+CARRY_KEYS = ("prompt", "script", "shots", "file", "mime", "model", "seconds", "length_s", "note", "qa", "metrics")
 QUALITY_METRIC = "Demo output quality"
 MAX_QUALITY_LABELS = 5  # labels listed per problem in the scorecard notes; the rest are counted
 
@@ -468,6 +468,57 @@ def chat_reply(project_dir: str, asset: dict) -> str:
         return ""
 
 
+def backfill_metrics(settings: Settings, project_dir: str, run: Optional[Callable] = None) -> int:
+    """Measure the ready outputs of a saved project that have no metrics yet (builds saved before the measured
+    layer existed, or whose measurement failed): one asset at a time, each written to the status file under its
+    lock as soon as it is measured, skipped while a job is running on the project. Never raises.
+    -> the number of outputs measured. `run(label, role, fn)` runs a model step through the resolver (the speech
+    word error rate); without it that metric is reported as not measured."""
+    if not getattr(settings, "output_metrics", True) or is_running(project_dir):
+        return 0
+    state = load_status(project_dir)
+    if not state:
+        return 0
+    done = 0
+    for d in state["deliverables"]:
+        if not isinstance(d, dict) or d.get("kind") not in modality_eval.MEASURED_KINDS:
+            continue
+        for a in d.get("assets") or []:
+            if not isinstance(a, dict) or a.get("status") != "ready":
+                continue
+            have = a.get("metrics") if isinstance(a.get("metrics"), dict) else {}
+            if have.get("metrics") and not have.get("error"):
+                continue
+            path = asset_path(project_dir, a)
+            if not path:
+                continue
+            try:
+                with open(path, "rb") as fh:
+                    data = fh.read()
+                variant = {k: a.get(k, "") for k in ("label", "language", "script", "prompt", "shots")}
+                text = media_qa.chat_text(dict(variant, reply=data.decode("utf-8", errors="replace"))) \
+                    if d["kind"] == "chat" else ""
+                metrics = modality_eval.measure(settings, deliverable=d, variant=variant, data=data,
+                                                mime=a.get("mime", ""), text=text, run=run)
+            except Exception as e:  # one output's trouble never stops the sweep
+                logger.warning("could not measure %s", os.path.basename(path), exc_info=True)
+                metrics = modality_eval.summarize(d["kind"], [])
+                metrics["error"] = redact(str(e))[:200]
+            sp = status_path(project_dir)
+            with file_lock(sp):
+                current = read_json(sp, None)
+                if not isinstance(current, dict) or current.get("build_id") != state.get("build_id"):
+                    return done  # a new build owns the file now
+                for cd in current.get("deliverables") or []:
+                    if cd.get("id") == d.get("id"):
+                        for ca in cd.get("assets") or []:
+                            if ca.get("label") == a.get("label") and ca.get("file") == a.get("file"):
+                                ca["metrics"] = metrics
+                write_json(sp, current)
+            done += 1
+    return done
+
+
 def _hero(story) -> str:
     """The story's hero as one bounded line ('' if none)."""
     hero = story.get("hero") if isinstance(story, dict) else ""
@@ -690,6 +741,7 @@ class _Job:
                           seconds=round(time.monotonic() - t0, 1), length_s=length_s, note=note)
         self._discard(a.get("file", ""), name)
         if not check:
+            self._measure(state, d, a, name)
             return
         qa = self._checked(dq, a, data, mime, first_frame, model, length_s)
         best = {"file": name, "model": model, "mime": mime, "qa": qa, "length_s": length_s}  # best-scoring so far
@@ -725,6 +777,33 @@ class _Job:
         qa = dict(best["qa"], regenerated=True, first_summary=first_summary) if tried else best["qa"]
         self._set_asset(did, label, status="ready", qa=qa, note=note, file=best["file"], model=best["model"],
                         mime=best["mime"], length_s=best["length_s"])
+        self._measure(state, d, a, best["file"])
+
+    def _measure(self, state: dict, d: dict, a: dict, name: str) -> None:
+        """The measured layer (engine/modality_eval.py): market-standard metrics of the ready asset, stored as
+        the asset's "metrics". Runs after the verdict so a slow measurement never delays a usable output, and
+        never fails the asset."""
+        if not getattr(self.s, "output_metrics", True) or d["kind"] not in modality_eval.MEASURED_KINDS:
+            return
+        state = self._update(lambda s: None)  # fresh: the director may have rewritten the prompt meanwhile
+        d = next((x for x in state["deliverables"] if x["id"] == d["id"]), d)
+        try:
+            with open(os.path.join(folder(self.dir), name), "rb") as fh:
+                data = fh.read()
+            current = next((x for x in d["assets"] if x["label"] == a["label"]), a)
+            variant = {k: current.get(k, "") for k in ("label", "language", "script", "prompt", "shots")}
+            others = [x.get("brief", "") for x in state["deliverables"]
+                      if x.get("id") != d["id"] and x.get("kind") in ("image", "video")]
+            run = lambda label, role, fn: self.doctor.run(f"{label} ({d['title']})", ROLES[role],
+                                                          lambda m, loc, hint: (fn(m, loc), 1.0))[0]
+            metrics = modality_eval.measure(self.s, deliverable=d, variant=variant, data=data,
+                                            mime=current.get("mime", ""), text=self._transcript(d, current, data),
+                                            others=others, run=run)
+        except Exception as e:  # measurement boundary: the asset is already ready
+            logger.warning("could not measure %s", name, exc_info=True)
+            metrics = modality_eval.summarize(d["kind"], [])
+            metrics["error"] = redact(str(e))[:200]
+        self._set_asset(d["id"], a["label"], metrics=metrics)
 
     @staticmethod
     def _length(d: dict, data: bytes) -> float:

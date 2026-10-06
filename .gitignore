@@ -13,3 +13,5 @@ generated_projects/
 .pytest_cache/
 .streamlit/secrets.toml
 docs/
+# The Google Cloud reference architecture template (internal file; fetched with python -m engine.bom_template)
+templates/
