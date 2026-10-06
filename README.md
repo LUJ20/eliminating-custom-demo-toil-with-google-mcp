@@ -37,6 +37,7 @@ results in seconds, with no rebuild. Knobs: `PREBUILD_SAMPLES=false` turns this 
 ## How it works
 
 ```mermaid
+%%{init: {"flowchart": {"wrappingWidth": 460}}}%%
 flowchart TB
     subgraph G ["1. Ground (two lookups at once)"]
         direction LR
@@ -150,6 +151,7 @@ To remove the app: `gcloud run services delete gemini-mcp-studio --region us-cen
 The codebase uses a **deterministic Python orchestrator** pattern (`Orchestrator → Gemini Brain + MCP Knowledge + Direct Google API Tools`) rather than an open-ended autonomous tool-calling loop. The boxes are numbered in the order one build uses them; each arrow is what a step hands to the next:
 
 ```mermaid
+%%{init: {"flowchart": {"wrappingWidth": 460}}}%%
 flowchart TB
     UI["1. Streamlit UI · app.py<br/>takes the ask, shows the kit"]
     O["2. Python orchestrator · usecase_synthesizer.py (build) · build_editor.py (chat edits)<br/>deliverables.py (media jobs) · prebuild.py (samples)<br/>plain Python: calls steps 3 to 7 in this order, with retries, parallel lanes and cost caps"]
