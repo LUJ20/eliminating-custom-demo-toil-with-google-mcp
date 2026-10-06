@@ -4,8 +4,8 @@
   2. Technical guidance document            (go/solutions-tgd-template structure)
   3. Demo delivery guide and script         (go/ss2-demo-script structure)
   4. Proof-of-concept technical best practices (go/ss2-poc-best-practices structure)
-  5. AI agents and skills implementation guide (go/ss2-agents-skills) with a SKILL.md in the agent-skills format,
-     shipped in the codebase package
+  5. AI agents and skills implementation guide (go/ss2-agents-skills) with a SKILL.md in the agent-skills format
+     (skill_creator conventions: triggering-contract frontmatter, imperative body), shipped in the codebase package
 
 The facts (stages, models, deliverables, scorecard, Well-Architected review, package files, grounding docs) come from
 the build result. The narrative that the templates ask for and the facts alone cannot give (the pattern's name and
@@ -21,6 +21,7 @@ import json
 import os
 import re
 import tempfile
+import textwrap
 from typing import Dict, List, Optional, Tuple
 
 from engine import vertex
@@ -562,75 +563,152 @@ def skills_html(result: dict, bom: dict, skill_md: str) -> str:
     parts.append("<h2>Fan-out through different surfaces</h2><p>The same SKILL.md works in Antigravity and the Gemini CLI, "
                  "can be loaded by an agent built with the Agent Development Kit, and can back a Gemini Enterprise agent; "
                  "test it on each surface you intend to support.</p>")
-    parts.append(f"<h2>SKILL.md</h2><p>Shipped in the codebase package as {SKILL_FILE}:</p><pre>{html.escape(skill_md)}</pre>")
+    parts.append(f"<h2>SKILL.md</h2><p>Shipped in the codebase package as {SKILL_FILE}, in the format of the central "
+                 "agent-skills catalogue (skill_creator conventions): the frontmatter is the triggering contract an agent "
+                 "reads before loading the skill (what it does, when to use it, when not to), the body is the imperative "
+                 "runbook with the reason behind each rule, and the acceptance table is the expectation set for the "
+                 f"skill's eval cases. Install it in a folder named {html.escape(skill_folder(result))} (the skill name with "
+                 f"underscores).</p><pre>{html.escape(skill_md)}</pre>")
     return _page(f"{result.get('customer_name', '')}: AI agents and skills implementation guide",
                  "Agent / skills implementation guide", "".join(parts), result)
 
 
+# ---------------------------------------------------------------------------------------------- SKILL.md
+# The SKILL.md follows the conventions of the skill_creator skill of the central agent-skills catalogue: the frontmatter
+# is a triggering contract (a third-person capability statement, the user's problem rather than the tool, "Use when"
+# triggers, "Don't use for" negative triggers, under 1024 characters, no commands or paths in it); the name is kebab-case
+# in gerund form and the install folder is the name with underscores; the body is imperative, gives exact commands with
+# the reason behind each rule and a way to verify it, and holds what an agent gets wrong without help rather than
+# documentation (README.md in the package is the documentation).
+SKILL_DESCRIPTION_MAX = 1024          # platform limit on the frontmatter description
+SKILL_NAME_MAX = 64
+_MD_CELL = re.compile(r"[|\r\n]+")
+
+
+def skill_name(result: dict) -> str:
+    """kebab-case, gerund form: running-<slug>-demo."""
+    slug = _SLUG.sub("-", str(result.get("slug") or "demo").lower()).strip("-")
+    slug = slug[:SKILL_NAME_MAX - len("running--demo")].strip("-") or "demo"
+    return f"running-{slug}-demo"
+
+
+def skill_folder(result: dict) -> str:
+    """The folder to install the skill in: the name with underscores (folder == name.replace('-', '_'))."""
+    return skill_name(result).replace("-", "_")
+
+
+def skill_description(result: dict, bom: dict) -> str:
+    """The triggering contract: capability statement with this demo's objective, "Use when" and "Don't use for"; always
+    under SKILL_DESCRIPTION_MAX characters."""
+    customer = _clean(result.get("customer_name"), 80) or "customer"
+    purpose = _clean(bom.get("objective") if done(bom) else result.get("summary"), MAX_OBJECTIVE).rstrip(" .")
+    head = f"Runs, checks and extends the {customer} demo pipeline on Google Cloud"
+    use = (f"Use when running or reproducing the {customer} demo in a Google Cloud project, comparing a run with its "
+           "acceptance criteria, changing the model behind a stage, or adding a stage, language or output to it.")
+    dont = ("Don't use for designing a demo from a different ask (use the Gemini + MCP Use-Case Studio) or for Google "
+            "Cloud project setup that is unrelated to this pipeline.")
+    room = SKILL_DESCRIPTION_MAX - len(head) - len(use) - len(dont) - 5
+    if purpose and room > 40:
+        head = f"{head}: {purpose[:room].rstrip(' ,;:.')}"
+    return f"{head}. {use} {dont}"
+
+
+def _cell(value) -> str:
+    """A markdown table cell: no pipes or line breaks, whitespace collapsed, current product names."""
+    return " ".join(_MD_CELL.sub(" ", current_names(str(value or ""))).split()) or "-"
+
+
 def skill_markdown(result: dict, bom: dict) -> str:
-    """The SKILL.md for the package: YAML frontmatter (name, description) and the instructions an agent follows to run,
+    """The SKILL.md for the package (see the note above): YAML frontmatter and the instructions an agent follows to run,
     check and extend this demo's pipeline."""
     ok = done(bom)
-    slug = _SLUG.sub("-", str(result.get("slug") or "demo").lower()).strip("-") or "demo"
-    customer = result.get("customer_name", "")
-    purpose = bom.get("objective") if ok else current_names(result.get("summary", ""))
-    description = " ".join(f"Run, check and extend the {customer} demo pipeline on Google Cloud: {purpose}".split())[:400]
-    stages = "\n".join(f"{i}. **{s.get('stage')}** ({current_names(s.get('service') or s.get('api') or '')}"
-                       f"{', ' + s['model'] if s.get('model') else ''}): {current_names(s.get('description') or '')}"
-                       for i, s in enumerate(_stages(result), 1)) or "(no stages)"
-    checks = "\n".join(f"- {m.get('metric')}: threshold {m.get('threshold')} (this build: {m.get('value')})"
-                       for m in _rubric(result)) or "- (no scorecard rows recorded)"
+    name, folder = skill_name(result), skill_folder(result)
+    zip_name = f"{os.path.basename(str(result.get('slug') or 'demo')) or 'demo'}_codebase.zip"
+    customer = _clean(result.get("customer_name"), 80)
+    purpose = _clean(bom.get("objective") if ok else result.get("summary"), MAX_OBJECTIVE)
+    ask = _clean(result.get("usecase_ask"), 300)
+    description = textwrap.fill(skill_description(result, bom), width=100, initial_indent="  ", subsequent_indent="  ",
+                                break_long_words=False, break_on_hyphens=False)
+    stages = _stages(result)
+    tiers = sorted({str(s.get("tier") or "").strip().lower() for s in stages} - {""})
+    overrides = ", ".join(f"`{t}` -> `MODEL_{t.upper()}`" for t in tiers) or "none (no model stage)"
+    stage_rows = "\n".join(
+        f"| {_cell(s.get('stage'))} | {_cell(s.get('service'))}{' (' + _cell(s['api']) + ')' if s.get('api') else ''} | "
+        f"{_cell(s.get('tier'))} | {_cell(s.get('model'))} | {_cell(s.get('description'))} |" for s in stages) \
+        or "| (no stages) | - | - | - | - |"
+    check_rows = "\n".join(f"| {_cell(m.get('metric'))} | {_cell(m.get('threshold'))} | {_cell(m.get('value'))} |"
+                           for m in _rubric(result)) or "| (no scorecard rows recorded) | - | - |"
     skills = "\n".join(f"- **{s['name']}**: {s['purpose']} Inputs: {s['inputs']} Outputs: {s['outputs']} "
                        f"Evaluation: {s['evaluation']}" for s in bom.get("skills") or []) if ok else \
         "- (the skills catalogue is written when the demo is rebuilt)"
     docs = "\n".join(f"- [{g.get('title') or g.get('url')}]({g.get('url')})" for g in (result.get("grounding_sources") or [])
                      if isinstance(g, dict) and str(g.get("url", "")).startswith("https://"))[:1500] or "- (none recorded)"
-    guard = ("- Name products as the official docs do today (Agent Platform, Agent Search, Agent Runtime).\n"
-             "- Never hard-code a model ID: change usecase_config.json or set MODEL_<TIER>.\n"
-             "- Do not add customer PII to code or prompts; the package passed a PII scan.\n"
-             "- Keep the output checks: do not show a clip or a data result that failed them.")
     return f"""---
-name: {slug}-demo-pipeline
-description: {description}
+name: {name}
+description: >-
+{description}
 ---
 
 # {customer} demo pipeline
 
 {purpose}
 
-## When to use this skill
+The package is the pipeline the Gemini + MCP Use-Case Studio built for this ask: `pipeline.py` (the stages below, in
+order, behind `run(payload)`), `usecase_config.json` (the design and the model of each stage), `requirements.txt`,
+`README.md` (the story and the design), `eval_report.json` (the scorecard of the reference build) and this file.
+The ask: {ask}
 
-- To run or demonstrate the {customer} pipeline in a Google Cloud project.
-- To check its outputs against the acceptance criteria below.
-- To extend it (a new stage, language or output) without breaking the pattern.
+## Quick start
 
-## Inputs
+```bash
+unzip {zip_name} -d {folder}
+cd {folder}
+pip install -r requirements.txt
+export GOOGLE_CLOUD_PROJECT={{project_id}}
+python pipeline.py --dry-run
+python pipeline.py "{{input}}"
+```
 
-- `GOOGLE_CLOUD_PROJECT`: the project to run in (billing on, the APIs of the stages enabled).
-- The pipeline input described in README.md (the customer ask: {" ".join(str(result.get("usecase_ask") or "").split())[:300]}).
+Run the dry run before the real run: it prints every stage with the model it resolved and makes no API call, so a
+stage whose model or API is not available in the project fails there, before anything is billed. The real run takes one
+text input (the subject of the ask; README.md describes it) and runs the stages in order.
 
-## Steps
+## Stages
 
-1. Unzip the codebase package and `pip install -r requirements.txt`.
-2. `python pipeline.py --dry-run`: every stage with its resolved model, no API call. Fix any stage without a model first.
-3. `python pipeline.py "<input>"`: runs the stages below in order.
-4. Compare the outputs with the acceptance criteria; eval_report.json holds the scores of the reference build.
+| Stage | Service (API) | Tier | Model in the reference build | Does |
+| --- | --- | --- | --- | --- |
+{stage_rows}
 
-## The stages
+Change the model behind a stage through its tier, never by writing a model ID into `pipeline.py`: set
+`models.<tier>.model` in `usecase_config.json`, or override it for one run with the environment variable of the tier
+({overrides}). The tier is what keeps the pipeline running after a model is retired, and the studio's code check
+rejects a package that uses a model ID as a value.
 
-{stages}
+## Acceptance criteria
 
-## Skills in this pipeline
+The studio's scorecard for the reference build. A run is good when its outputs would pass the same rows; use them as
+the expectations of the eval cases when this skill is upstreamed.
+
+| Check | Threshold | Reference build |
+| --- | --- | --- |
+{check_rows}
+
+## Skills inside the pipeline
 
 {skills}
 
-## Acceptance criteria (the studio's scorecard)
+## Gotchas
 
-{checks}
-
-## Guardrails
-
-{guard}
+- Keep the three invariants the studio checks on every package, or a rebuild rejects the change: `python pipeline.py
+  --dry-run` prints every stage without an API call, `run(payload)` exists, and no model ID appears as a value in
+  `pipeline.py` (a model in a comment is fine).
+- Name products as the official docs do today (Agent Platform, Agent Search, Agent Runtime): the earlier names are
+  still in a model's training data, so it uses them unless told, and customers read these files.
+- Keep customer data and PII out of code, prompts and this file: the package passed the studio's PII scan and is
+  shared as it is (Drive, a team repository, a customer).
+- Show only outputs that passed their checks (media: language, script, subject, length, look; data: schema, brief,
+  safety): a clip or a result that failed them is what a customer notices first in a demo.
+- Media stages (image, video, speech, music) bill per call: run the dry run and the smallest input first.
 
 ## References
 
