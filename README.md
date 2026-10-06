@@ -25,8 +25,10 @@ scanned forms"*. The studio returns:
   one file) and films what the brief names (the product in an ad, a presenter only when the ask wants one)
 - **Story**: a hero, a challenge and a payoff, plus a presenter script
 - **Bill of materials, complete for every custom demo**: a 4-slide deck on the Google Cloud reference
-  architecture template (cover, architecture with the demo outputs attached, design considerations by
-  Well-Architected pillar, when to use / anti-patterns) with the talk track in the speaker notes, plus the four
+  architecture template, filled in place so the template's own typography, colours, cover art and table styling
+  stay (cover, architecture drawn in the template's icon language: the user, the Google Cloud canvas, one white
+  service card per stage with the product icon and the model it runs on, the demo outputs; design considerations
+  by Well-Architected pillar; when to use / anti-patterns) with the talk track in the speaker notes, plus the four
   Global Solutions documents: technical guidance, demo delivery guide and clickpath, proof-of-concept best
   practices and runbook, and the AI agents and skills guide with a ready `SKILL.md` (also inside the code
   package) in the agent-skills format of the central skill catalogue (`skill_creator` conventions: a
@@ -224,8 +226,10 @@ Gemini+MCP/
 │   ├── regression.py               # Post-upgrade regression runner against reference use cases
 │   ├── dependency_resolver.py      # PyPI/MCP-grounded package name & version verifier for requirements.txt
 │   ├── pii_sanitizer.py            # Secret and PII scanner/redactor for generated code and packages
-│   ├── deck_generator.py           # 4-slide reference-architecture deck (.pptx) and Google Slides generator
-│   ├── slide_viewer.py             # HTML/SVG slide preview renderer for the Streamlit UI
+│   ├── deck_generator.py           # 4-slide reference-architecture deck: the template filled in place, icon diagram
+│   ├── bom_template.py             # Where the template .pptx lives (templates/, bucket _templates/) and how to fetch it
+│   ├── deck_icons.py               # Product icons for the diagram: folder discovery, bucket zip, service-name lookup
+│   ├── slide_viewer.py             # HTML/SVG slide player for the Streamlit UI (shapes, pictures, connectors, tables)
 │   ├── story_doc.py                # Narrative arc and presenter talk-track generator (.html / Google Doc)
 │   ├── artifact_store.py           # Publisher for Google Drive folders and Cloud Storage buckets
 │   ├── project_sync.py             # Bidirectional background sync between generated_projects/ and GCS (_projects/)
@@ -437,4 +441,4 @@ On failure the model is **held** (not promoted) or **rolled back** to the last k
   - `engine/serve.py` warms up the model registry in `.cache/` on startup, runs `engine/project_sync.py` in a background daemon thread to restore and back up `generated_projects/` to `gs://<bucket>/_projects/` every 60 seconds, and then starts `engine/prebuild.py` (after the restore and once models are resolved) so a fresh instance fills in whatever samples the bucket did not have, without waiting for a visitor; the same thread then redraws old decks, adds the Well-Architected review to saved demos that predate it, and plays the first reply of any chat demo that has none.
 * **Knobs**: `PREBUILD_SAMPLES` (default `true`) turns the pre-build off; `PREBUILD_PARALLEL` (default 4) is how many samples build at once; `python -m engine.prebuild --status` reports which samples are current, `--force` rebuilds all, `--push` uploads them to the bucket, `--decks` only redraws the decks of saved projects for a new slide layout, `--chats` only re-directs and plays the chat demos that have no first reply yet, `--reviews` only adds the Well-Architected review to saved projects that have none.
 
-Offline unit tests: `python -m unittest discover -s tests` (496 tests, about 7 seconds, no cloud calls). CI (`.github/workflows/ci.yml`) runs the same suite plus a `bash -n deploy.sh` syntax check on every push and pull request, with the actions pinned to commit hashes and a read-only token.
+Offline unit tests: `python -m unittest discover -s tests` (509 tests, about 7 seconds, no cloud calls). CI (`.github/workflows/ci.yml`) runs the same suite plus a `bash -n deploy.sh` syntax check on every push and pull request, with the actions pinned to commit hashes and a read-only token.

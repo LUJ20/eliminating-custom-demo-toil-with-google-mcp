@@ -1,8 +1,10 @@
 """Interactive Google Slides / PPTX Presentation Player for Streamlit UI.
-Parses native PowerPoint shapes, text, tables, and presenter notes directly from the .pptx
+Parses native PowerPoint shapes, text, tables, pictures, connectors and presenter notes directly from the .pptx
 file and renders an interactive presentation player with slide navigation, notes, and
 direct links to Google Slides.
 """
+import base64
+import io
 import os
 import json
 import html as _html
@@ -14,11 +16,31 @@ try:
     # arrow auto-shapes (the deck's architecture flow) -> the glyph the player draws for them
     ARROW_GLYPHS = {MSO_SHAPE.RIGHT_ARROW: "➜", MSO_SHAPE.LEFT_ARROW: "⬅", MSO_SHAPE.DOWN_ARROW: "⬇",
                     MSO_SHAPE.UP_ARROW: "⬆"}
-    LINE_TYPE = MSO_SHAPE_TYPE.LINE  # connectors (the dashed stage -> output lines) are drawn as SVG lines
+    LINE_TYPE = MSO_SHAPE_TYPE.LINE  # connectors (the stage -> stage and stage -> output lines) are SVG lines
+    PICTURE_TYPE = MSO_SHAPE_TYPE.PICTURE  # the template's cover art, logo and panels, the diagram's product icons
 except ImportError:
     pptx = None
     ARROW_GLYPHS = {}
     LINE_TYPE = None
+    PICTURE_TYPE = None
+
+MAX_PICTURE_PX = 1000  # pictures are inlined as data URIs; anything larger is downscaled first (Pillow, when present)
+
+
+def picture_data_uri(blob: bytes, content_type: str) -> str:
+    """A data: URI for a picture blob, downscaled to MAX_PICTURE_PX on its long side when Pillow can do it (the
+    template's cover art is 1200 px and 155 KB; the icons are small already). Without Pillow the bytes go as is."""
+    try:
+        from PIL import Image
+        with Image.open(io.BytesIO(blob)) as im:
+            if max(im.size) > MAX_PICTURE_PX:
+                im.thumbnail((MAX_PICTURE_PX, MAX_PICTURE_PX))
+                out = io.BytesIO()
+                im.save(out, format="PNG", optimize=True)
+                blob, content_type = out.getvalue(), "image/png"
+    except Exception:  # no Pillow, or a format it cannot read: the original bytes
+        pass
+    return f"data:{content_type or 'image/png'};base64,{base64.b64encode(blob).decode('ascii')}"
 
 
 def render_presentation_player(deck_path: str, gslides_url: Optional[str] = None, height: int = 520) -> str:
@@ -43,15 +65,20 @@ def render_presentation_player(deck_path: str, gslides_url: Optional[str] = None
         slide_title = f"Slide {s_idx + 1}"
         first_title_found = False
 
-        for shp in slide.shapes:
+        for order, shp in enumerate(slide.shapes, 1):  # document order is the stacking order, as PowerPoint paints
+            z = order + 1
             if LINE_TYPE is not None and getattr(shp, "shape_type", None) == LINE_TYPE:
                 try:
                     x1, y1 = shp.begin_x / sw * 100.0, shp.begin_y / sh * 100.0
                     x2, y2 = shp.end_x / sw * 100.0, shp.end_y / sh * 100.0
                     color = f"#{shp.line.color.rgb}" if shp.line.color and shp.line.color.rgb else "#9AA0A6"
                     dash = ' stroke-dasharray="6 4"' if shp.line.dash_style else ""
-                    svg_lines.append(f'<line x1="{x1:.2f}" y1="{y1:.2f}" x2="{x2:.2f}" y2="{y2:.2f}" '
-                                     f'stroke="{color}" stroke-width="1.5" vector-effect="non-scaling-stroke"{dash}/>')
+                    attrs = f'stroke="{color}" stroke-width="1.5" fill="none" vector-effect="non-scaling-stroke"{dash}'
+                    if "bentConnector" in (shp._element.xpath("string(.//a:prstGeom/@prst)") or ""):
+                        my = (y1 + y2) / 2  # an elbow: down to the midpoint, across, down
+                        svg_lines.append(f'<path d="M{x1:.2f} {y1:.2f} V{my:.2f} H{x2:.2f} V{y2:.2f}" {attrs}/>')
+                    else:
+                        svg_lines.append(f'<line x1="{x1:.2f}" y1="{y1:.2f}" x2="{x2:.2f}" y2="{y2:.2f}" {attrs}/>')
                 except Exception:
                     pass
                 continue
@@ -59,6 +86,18 @@ def render_presentation_player(deck_path: str, gslides_url: Optional[str] = None
             t_pct = round(max(0.0, float(getattr(shp, "top", 0) or 0) / sh * 100.0), 2)
             w_pct = round(max(0.5, float(getattr(shp, "width", 0) or 0) / sw * 100.0), 2)
             h_pct = round(max(0.5, float(getattr(shp, "height", 0) or 0) / sh * 100.0), 2)
+
+            # Pictures: inlined, kept in proportion inside their box
+            if PICTURE_TYPE is not None and getattr(shp, "shape_type", None) == PICTURE_TYPE:
+                try:
+                    uri = picture_data_uri(shp.image.blob, shp.image.content_type)
+                    shape_divs.append(
+                        f'<img src="{uri}" alt="" style="position:absolute;left:{l_pct}%;top:{t_pct}%;width:{w_pct}%;'
+                        f'height:{h_pct}%;object-fit:contain;z-index:{z};">'
+                    )
+                except Exception:
+                    pass
+                continue
 
             # Table shapes
             if getattr(shp, "has_table", False):
@@ -86,7 +125,7 @@ def render_presentation_player(deck_path: str, gslides_url: Optional[str] = None
                             )
                         tr_list.append(f"<tr>{''.join(td_list)}</tr>")
                     shape_divs.append(
-                        f'<div class="gs-shape" style="position:absolute;left:{l_pct}%;top:{t_pct}%;width:{w_pct}%;height:{h_pct}%;overflow:hidden;z-index:2;">'
+                        f'<div class="gs-shape" style="position:absolute;left:{l_pct}%;top:{t_pct}%;width:{w_pct}%;height:{h_pct}%;overflow:hidden;z-index:{z};">'
                         f'<table style="width:100%;height:100%;border-collapse:collapse;table-layout:fixed;">{"".join(tr_list)}</table>'
                         f'</div>'
                     )
@@ -120,7 +159,7 @@ def render_presentation_player(deck_path: str, gslides_url: Optional[str] = None
                     shape_divs.append(
                         f'<div style="position:absolute;left:{l_pct}%;top:{t_pct}%;width:{w_pct}%;height:{h_pct}%;'
                         f'display:flex;align-items:center;justify-content:center;color:{color};font-size:1.6cqw;'
-                        f'font-weight:bold;z-index:2;">{ARROW_GLYPHS[kind]}</div>'
+                        f'font-weight:bold;z-index:{z};">{ARROW_GLYPHS[kind]}</div>'
                     )
                     continue
             except Exception:
@@ -139,41 +178,53 @@ def render_presentation_player(deck_path: str, gslides_url: Optional[str] = None
                     pt_val = 10.0
                     is_bold = False
                     col_hex = "#202124"
-                    try:
-                        if p_obj.font and p_obj.font.size:
-                            pt_val = float(p_obj.font.size.pt)
-                        elif p_obj.runs and p_obj.runs[0].font.size:
-                            pt_val = float(p_obj.runs[0].font.size.pt)
-                    except Exception:
-                        pass
-                    try:
-                        if p_obj.font and p_obj.font.bold:
-                            is_bold = True
-                        elif p_obj.runs and p_obj.runs[0].font.bold:
-                            is_bold = True
-                    except Exception:
-                        pass
-                    try:
-                        if p_obj.font and p_obj.font.color and p_obj.font.color.rgb:
-                            col_hex = f"#{p_obj.font.color.rgb}"
-                        elif p_obj.runs and p_obj.runs[0].font.color and p_obj.runs[0].font.color.rgb:
-                            col_hex = f"#{p_obj.runs[0].font.color.rgb}"
-                    except Exception:
-                        pass
+                    fonts = [f for f in (p_obj.font, *(r.font for r in p_obj.runs[:1])) if f is not None]
+                    for f in fonts:
+                        try:
+                            if f.size:
+                                pt_val = float(f.size.pt)
+                                break
+                        except Exception:
+                            continue
+                    for f in fonts:
+                        try:
+                            if f.bold:
+                                is_bold = True
+                                break
+                        except Exception:
+                            continue
+                    for f in fonts:
+                        try:
+                            if f.color and f.color.type is not None and f.color.rgb:  # a theme colour raises: next
+                                col_hex = f"#{f.color.rgb}"
+                                break
+                        except Exception:
+                            continue
 
-                    cqw_size = round(max(0.85, min(2.6, (pt_val / 960.0) * 110.0)), 2)
-                    fw_val = "700" if is_bold else "400"
+                    # 1 cqw = 1% of the slide width; a point is 1/72 in of a 13.333 in slide = 0.104 cqw
+                    cqw_size = round(max(0.7, min(8.4, pt_val / 9.6)), 2)
+                    spans = []
+                    for r in p_obj.runs:
+                        if not r.text:
+                            continue
+                        try:
+                            r_bold = r.font.bold
+                        except Exception:
+                            r_bold = None
+                        fw = "700" if (is_bold if r_bold is None else r_bold) else "400"
+                        spans.append(f'<span style="font-weight:{fw};">{_html.escape(r.text)}</span>')
+                    body = "".join(spans) or _html.escape(raw_t)
                     paras_html.append(
-                        f'<div style="font-size:{cqw_size}cqw;font-weight:{fw_val};color:{col_hex};line-height:1.28;margin-bottom:0.25cqw;word-break:break-word;">'
-                        f'{_html.escape(raw_t)}</div>'
+                        f'<div style="font-size:{cqw_size}cqw;font-weight:{"700" if is_bold else "400"};color:{col_hex};'
+                        f'line-height:1.22;margin-bottom:0.2cqw;word-break:break-word;">{body}</div>'
                     )
 
             pad_css = "0.5cqw 0.75cqw" if paras_html else "0"
-            z_idx = "2" if paras_html else "1"
+            overflow = "visible" if (bg_hex == "transparent" and border_css == "none") else "hidden"
             shape_divs.append(
                 f'<div class="gs-shape" style="position:absolute;left:{l_pct}%;top:{t_pct}%;width:{w_pct}%;height:{h_pct}%;'
                 f'background:{bg_hex};border:{border_css};border-radius:{radius_css};padding:{pad_css};'
-                f'box-sizing:border-box;overflow:hidden;z-index:{z_idx};">'
+                f'box-sizing:border-box;overflow:{overflow};z-index:{z};">'
                 f'{"".join(paras_html)}</div>'
             )
 
@@ -189,7 +240,7 @@ def render_presentation_player(deck_path: str, gslides_url: Optional[str] = None
         slide_inner_html = "".join(shape_divs)
         if svg_lines:  # the connectors, over the shapes and under nothing clickable
             slide_inner_html += ('<svg viewBox="0 0 100 100" preserveAspectRatio="none" style="position:absolute;'
-                                 'left:0;top:0;width:100%;height:100%;z-index:3;pointer-events:none;">'
+                                 'left:0;top:0;width:100%;height:100%;z-index:9999;pointer-events:none;">'
                                  + "".join(svg_lines) + '</svg>')
         slides_html.append(
             f'<div class="gslide-frame" id="gslide_{s_idx}" style="display:{disp_style};container-type:inline-size;position:relative;width:97%;height:410px;background:#FFFFFF;overflow:hidden;border-radius:4px;box-shadow:0 3px 12px rgba(0,0,0,0.25);">'

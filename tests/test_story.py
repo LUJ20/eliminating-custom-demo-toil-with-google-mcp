@@ -110,11 +110,12 @@ class DeckAndPackageStoryTest(OfflineTestCase):
         self.assertEqual(len(prs.slides), 4)
         cover = " ".join(sh.text_frame.text for sh in prs.slides[0].shapes if sh.has_text_frame)
         self.assertIn("Cymbal Air", cover)
-        self.assertIn("Reference architecture", cover)
+        self.assertIn("reference architecture", cover.lower())  # the template's kicker
+        self.assertIn("ask", cover)  # no BOM headline yet: the ask is the cover's subtitle
         self.assertIn("The story: A cancelled flight becomes a calm rebooking in any language.",
                       prs.slides[0].notes_slide.notes_text_frame.text)
         arch = " ".join(sh.text_frame.text for sh in prs.slides[1].shapes if sh.has_text_frame)
-        self.assertIn("For Aiko, a Diamond member flying Atlanta to Tokyo", arch)  # the hero above the diagram
+        self.assertIn(" Aiko ", f" {arch} ")  # the hero's name: the user node's label on the diagram
         self.assertIn("Lip-synced greeting", arch)  # the story's clip as a demo-output card
 
     def test_story_accepted_needs_coverage_and_story(self):

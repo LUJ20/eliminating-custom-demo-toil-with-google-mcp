@@ -37,7 +37,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import requests
 
-from engine import acceptance, bom as bom_mod, bom_template, brain, deliverables as dlv, manifest, versions, well_architected as waf
+from engine import acceptance, bom as bom_mod, bom_template, brain, deck_icons, deliverables as dlv, manifest, versions, well_architected as waf
 from engine.common import doc_title, doc_url, file_lock, is_product_doc, redact, slugify
 from engine.config import Settings, get_settings
 from engine.deck_generator import build_usecase_deck
@@ -213,14 +213,15 @@ def output_paths(output_dir: str, slug: str) -> Tuple[str, str, str]:
 
 def render_deck(path: str, result: Dict[str, Any], settings: Optional[Settings] = None) -> str:
     """The reference architecture deck of a build result (also used by the build chat after an edit), on the Google
-    Cloud template when it is installed (engine/bom_template.py)."""
+    Cloud template when it is installed (engine/bom_template.py) and with the product icons (engine/deck_icons.py)."""
     return build_usecase_deck(
         path, customer=result["customer_name"], ask=result["usecase_ask"], summary=result["summary"],
         stages=result["stages"], rubric=result["eval_metrics"], attempts=result["attempt_stats"],
         files=result["package_files"], whats_new=result["whats_new"], mode=result["mode"],
         deliverables=result["deliverables"], score=result["score"], final_status=result["final_status"],
         story=result.get("story") or {}, well_architected=result.get("well_architected"),
-        bom=result.get("bom"), template_path=bom_template.path(settings))
+        bom=result.get("bom"), template_path=bom_template.path(settings),
+        icons_dir=deck_icons.directory(settings))
 
 
 def persisted(result: Dict[str, Any]) -> str:
