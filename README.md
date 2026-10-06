@@ -40,33 +40,33 @@ results in seconds, with no rebuild. Knobs: `PREBUILD_SAMPLES=false` turns this 
 ## How it works
 
 ```mermaid
-%%{init: {"flowchart": {"wrappingWidth": 460}}}%%
+%%{init: {"themeVariables": {"fontSize": "18px"}, "flowchart": {"wrappingWidth": 300, "nodeSpacing": 30, "rankSpacing": 40}}}%%
 flowchart TB
+    U["Use case: customer + ask"] --> G
     subgraph G ["1. Ground (two lookups at once)"]
         direction LR
         G1["Official docs for the ask<br/>(Developer Knowledge MCP)"] ~~~ G2["Newest verified models<br/>(model resolver)"]
     end
-    subgraph BG ["2b. Background: starts right after the plan, runs through steps 3 to 5"]
-        direction LR
-        M["Demo media, only when the use case needs them:<br/>Imagen, Veo, TTS, Lyria · each output checked"] ~~~ T["Acceptance tests: 3-6 tests written from the ask,<br/>run on the design's own models, 6 at a time"] ~~~ W["Well-Architected review: the design scored<br/>on the 5 Framework pillars (Framework pages via MCP)"]
+    G --> PL["2. Plan (Gemini, reasoning tier)<br/>stages on Google Cloud, model<br/>features, demo outputs, story<br/>code-checked, re-asked until valid"]
+    PL --> BG
+    PL --> CC
+    subgraph BG ["2b. Background, from the first plan"]
+        direction TB
+        M["Demo media, only when needed:<br/>Imagen, Veo, TTS, Lyria<br/>(each output checked)"] ~~~ T["Acceptance tests: 3-6 written<br/>from the ask, run on the<br/>design's own models"] ~~~ W["Well-Architected review:<br/>5 pillars, Framework pages<br/>via MCP (advisory)"]
     end
     subgraph CC ["3. Build (two at once)"]
         direction LR
-        C["pipeline.py<br/>(Gemini, fast tier)"] ~~~ CI["One official doc per stage<br/>(MCP)"]
+        C["pipeline.py<br/>(Gemini, fast tier)"] ~~~ CI["One official doc<br/>per stage (MCP)"]
     end
     subgraph JJ ["4. Evaluate (two at once)"]
         direction LR
-        J["Judge: 5-row rubric<br/>(Gemini, reasoning tier)"] ~~~ K["Code checks: models up to date, features in code,<br/>dependencies in install docs, compiles, PII"]
+        J["Judge: 5-row rubric<br/>(Gemini, reasoning tier)"] ~~~ K["Code checks: models up to date,<br/>features, dependencies,<br/>compiles, PII"]
     end
-    U["Use case: customer + ask"] --> G
-    G --> PL["2. Plan: stages on Google Cloud, model features, demo deliverables, story<br/>(Gemini, reasoning tier · checked by code, re-asked until valid)"]
-    PL --> BG
-    PL --> CC
     CC --> JJ
-    JJ --> S["5. Score: PASSED, or retry (up to 3 attempts ·<br/>a passing design keeps its media and tests, only the code is rewritten)"]
+    JJ --> S["5. Score: PASSED, or retry<br/>(up to 3 attempts); a passing design<br/>keeps its media and tests"]
     BG --> S
-    S --> P["6. Package: architecture, code, media, deck, scorecard, Well-Architected review, PII audit<br/>stored in Cloud Storage, published to Drive + Slides on request"]
-    P -.-> A["The designed architecture itself can use any Google Cloud product the docs support<br/>(BigQuery, Document AI, Pub/Sub, Maps, Firebase, Contact Center AI, Spanner, ...)"]
+    S --> P["6. Package: code, media, deck,<br/>scorecard, review, PII audit<br/>Cloud Storage · Drive + Slides<br/>on request"]
+    P -.-> A["The designed architecture can use<br/>any Google Cloud product (BigQuery,<br/>Document AI, Pub/Sub, Maps,<br/>Firebase, ...)"]
 ```
 
 Read it top to bottom: the numbered steps run in that order, boxes side by side run at the same time, and the background trio runs while steps 3 to 5 proceed (at peak, five lanes are busy: code, citations, media, tests, review; the review is advisory and never changes the score). **MCP for knowledge, direct APIs for execution.** The MCP server supplies official docs (grounding, model discovery, citations); the orchestrator calls Google APIs itself; models come from the self-upgrading resolver. No agent framework runs the studio: the steps are fixed, so code decides, not the model. ADK appears only inside generated demos that need an agent (support agents, voice concierges). Two lists not to confuse: the models and APIs in the boxes are what the **studio** calls to make the kit; the **architecture it designs** for a use case can use any Google Cloud product (it is written into the code and the deck, and its outputs are demonstrated with Gemini and the media models rather than by deploying the customer's stack).
@@ -171,35 +171,42 @@ Not a substitute for an architecture review: the studio grounds and checks a dem
 The codebase uses a **deterministic Python orchestrator** pattern (`Orchestrator → Gemini Brain + MCP Knowledge + Direct Google API Tools`) rather than an open-ended autonomous tool-calling loop. The boxes are numbered in the order one build uses them; each arrow is what a step hands to the next:
 
 ```mermaid
-%%{init: {"flowchart": {"wrappingWidth": 460}}}%%
+%%{init: {"themeVariables": {"fontSize": "18px"}, "flowchart": {"wrappingWidth": 300, "nodeSpacing": 30, "rankSpacing": 40}}}%%
 flowchart TB
     UI["1. Streamlit UI · app.py<br/>takes the ask, shows the kit"]
-    O["2. Python orchestrator · usecase_synthesizer.py (build) · build_editor.py (chat edits)<br/>deliverables.py (media jobs) · prebuild.py (samples)<br/>plain Python: calls steps 3 to 7 in this order, with retries, parallel lanes and cost caps"]
-    subgraph K ["3. Knowledge: Developer Knowledge MCP · mcp_knowledge_client.py"]
+    O["2. Orchestrator · plain Python<br/>usecase_synthesizer.py,<br/>build_editor.py, deliverables.py,<br/>prebuild.py: calls 3 to 7 in order,<br/>retries, parallel lanes and cost caps"]
+    subgraph KB ["3. Knowledge  →  4. Gemini brain"]
         direction LR
-        MCP["search_documents · get_documents<br/>official docs for the ask, model pages, install docs"] ~~~ ANY["Any Google Cloud service can be in the design<br/>BigQuery · Document AI · Maps · Firebase · Pub/Sub · Spanner · ... (from the docs)"]
+        subgraph K ["3. Developer Knowledge MCP"]
+            direction TB
+            MCP["mcp_knowledge_client.py:<br/>search_documents · get_documents<br/>docs for the ask, model pages,<br/>install docs"] ~~~ ANY["Any Google Cloud service can be<br/>in the design: BigQuery,<br/>Document AI, Maps, Firebase,<br/>Pub/Sub, ..."]
+        end
+        subgraph B ["4. Gemini brain"]
+            direction TB
+            R["4a. Model Resolver<br/>model_resolver.py<br/>newest verified model per tier"] --> G["4b. brain.py · vertex.py<br/>code_editor.py<br/>plan, story, media direction,<br/>code, judge, chat edits"]
+        end
+        MCP -->|"docs, models, features"| G
     end
-    subgraph B ["4. Gemini brain"]
+    subgraph TE ["5. Google APIs the studio calls  →  6. Evaluation and safety"]
         direction LR
-        R["4a. Model Resolver · model_resolver.py<br/>newest verified model per tier (found in the docs)"] --> G["4b. brain.py · code_editor.py · vertex.py<br/>plan · story · media direction · pipeline.py · judge · chat edits"]
+        subgraph T ["5. Direct Google APIs"]
+            direction TB
+            MED["media.py: demo media, only when<br/>the plan asks for them<br/>Veo · Imagen · Gemini-TTS · Lyria"] ~~~ ST["artifact_store.py · project_sync.py<br/>Cloud Storage (every build)<br/>Drive + Slides (on publish)"]
+        end
+        subgraph E ["6. Evaluation and safety"]
+            direction TB
+            EV["acceptance.py · media_qa.py<br/>well_architected.py<br/>dependency_resolver.py<br/>pii_sanitizer.py"] ~~~ RG["regression.py<br/>reference builds after<br/>a model upgrade"]
+        end
+        MED -->|"every clip checked"| EV
     end
-    subgraph T ["5. Google APIs the studio itself calls · media.py · artifact_store.py · project_sync.py"]
-        direction LR
-        MED["Demo media, only when the plan asks for them<br/>Veo · Imagen · Gemini-TTS · Lyria"] ~~~ ST["Cloud Storage (every build) · Drive + Slides (on publish)<br/>Live · Embeddings: model verification only"]
-    end
-    subgraph E ["6. Evaluation and safety"]
-        direction LR
-        EV["acceptance.py: tests on the design's own models · media_qa.py: every output<br/>dependency_resolver.py: imports confirmed in install docs (asks 3) · pii_sanitizer.py: scrub"] ~~~ RG["regression.py<br/>reference builds after a model upgrade"]
-    end
-    P["7. Package · scorecard, code, media, deck, story, PII audit<br/>stored in Cloud Storage (5), published to Drive + Slides on request, shown in the UI (back to 1)"]
+    P["7. Package · code, media, deck,<br/>scorecard, review, PII audit<br/>Cloud Storage, Drive + Slides, UI"]
+    TS["Troubleshooter · troubleshooter.py<br/>around every model call in 4, 5, 6<br/>invalid output → re-prompt<br/>with the reason; failure →<br/>fallback model; incidents logged"]
     UI -->|"customer + ask"| O
     O -->|"3. ground the ask"| MCP
-    MCP -->|"docs, model IDs, features"| G
-    G -->|"4 to 5: media directions, run as a background job"| MED
+    G -->|"4 to 5: media directions (background)"| MED
     G -->|"4 to 6: design + pipeline.py"| EV
-    MED -->|"5 to 6: every clip is checked"| EV
-    EV -->|"6 to 7: scorecard rows, PASSED or retry"| P
-    EV -.- TS["Troubleshooter · troubleshooter.py · around every model call in 4, 5 and 6<br/>invalid output → re-prompt with the reason · failure → fallback model · incidents logged"]
+    EV -->|"6 to 7: scorecard, PASSED or retry"| P
+    TE -.- TS
 ```
 
 Two different lists, on purpose. **What a demo can use** is open: the planner picks services for the customer's ask from the official docs (a delivery demo gets Maps, Fleet Engine and Firebase; an analytics demo gets BigQuery), so coverage is everything Google documents. It is Google Cloud only by default: a stage on another vendor's service, a bare protocol or a client platform is accepted only when the ask names it (and the card says so); a customer's own app is modelled by the Google Cloud service it calls. **What the studio itself calls** is deliberately small, and it is a maximum, not a fixed set per build: Gemini on every build (plan, media direction, code, judge, acceptance tests, output checks); Veo, Imagen, Gemini-TTS and Lyria only when the use case's deliverables are video, image, speech or music (a data, RAG or agent demo gets its tables, JSON, agent traces and chat from Gemini as text, and no media model is called); Cloud Storage on every build (project backup); Drive + Slides only when you publish; Live and Embeddings only by the model resolver to verify a model is callable. The PII scrub, the zip, the deck and the story script are Python, no API. The studio designs, writes and evaluates the demo; it does not run the customer's services (generated code is never executed), so it needs no credentials for them.
