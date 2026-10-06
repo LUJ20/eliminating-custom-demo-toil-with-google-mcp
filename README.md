@@ -129,16 +129,18 @@ The codebase uses a **deterministic Python orchestrator** pattern (`Orchestrator
 ```mermaid
 flowchart TB
     UI["Streamlit UI<br/>app.py"] --> O["Python orchestrators<br/>usecase_synthesizer.py · build_editor.py · deliverables.py<br/>(step order, retries, parallelism, cost caps)"]
-    subgraph K["Knowledge"]
+    subgraph K["Knowledge: all Google developer docs"]
         MCP["Developer Knowledge MCP<br/>mcp_knowledge_client.py<br/>search_documents · get_documents"]
+        ANY["Any Google Cloud service can be in a demo<br/>BigQuery · Document AI · Vertex AI Search · Maps<br/>Firebase · Pub/Sub · Cloud Run · Spanner · ... (from the docs)"]
+        MCP --> ANY
     end
     subgraph B["Gemini brain"]
         R["Model Resolver<br/>model_resolver.py<br/>newest verified model per tier"]
         G["brain.py · vertex.py<br/>plan · code · judge · check"]
         R --> G
     end
-    subgraph T["Google API tools"]
-        API["media.py · artifact_store.py · project_sync.py<br/>Veo · Imagen · TTS · Lyria · Live · Embeddings<br/>Cloud Storage · Drive"]
+    subgraph T["Google APIs the studio itself calls"]
+        API["media.py · artifact_store.py · project_sync.py<br/>Veo · Imagen · TTS · Lyria · Live · Embeddings<br/>Cloud Storage · Drive + Slides"]
     end
     subgraph E["Evaluation and safety"]
         EV["acceptance.py · media_qa.py<br/>regression.py · pii_sanitizer.py"]
@@ -149,6 +151,8 @@ flowchart TB
     O --> EV
     MCP -. "model IDs, features, doc context" .-> R
 ```
+
+Two different lists, on purpose. **What a demo can use** is open: the planner picks services for the customer's ask from the official docs (a delivery demo gets Maps, Fleet Engine and Firebase; an analytics demo gets BigQuery), so coverage is everything Google documents. **What the studio itself calls** is deliberately small: Gemini to think, the media models to make demo assets, Cloud Storage and Drive to keep and publish them. The studio designs, writes and evaluates the demo; it does not run the customer's services (generated code is never executed), so it needs no credentials for them.
 
 #### Design Responsibilities
 | Layer | Implementation | Responsibility |
