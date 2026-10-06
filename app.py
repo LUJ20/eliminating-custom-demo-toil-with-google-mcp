@@ -1138,7 +1138,7 @@ if resolver.is_empty():
         first_run_notes = resolver.refresh(log=logger.info)
     if resolver.is_empty():
         st.warning("No Gemini model could be verified yet: " + redact(" | ".join(first_run_notes))[:300]
-                   + ". The next build tries again; 'Models in use' has a re-resolve button.")
+                   + ". The next build tries again; `python -m engine.model_resolver --refresh` forces a retry now.")
 else:
     hourly_refresh_check(settings)
 regression.install(settings)  # after a model promotion: re-build the reference use cases, roll back on a regression
