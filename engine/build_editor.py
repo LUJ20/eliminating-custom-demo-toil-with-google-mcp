@@ -40,7 +40,7 @@ import uuid
 import zipfile
 from typing import Any, Dict, List, Optional, Tuple
 
-from engine import acceptance, brain, code_editor, deliverables as dlv, manifest, versions, vertex
+from engine import acceptance, brain, code_editor, deliverables as dlv, manifest, versions, vertex, well_architected as waf
 from engine.artifact_store import ArtifactStore
 from concurrent.futures import ThreadPoolExecutor
 
@@ -73,7 +73,7 @@ MAX_EDITS_LOG = 50
 RESTART_WAIT_S = 1800  # a superseded job finishes its current clip before it stops
 RESTART_POLL_S = 2.0
 CONFIG = "usecase_config.json"
-PACKAGE = (CONFIG, "pipeline.py", "requirements.txt", "README.md", "eval_report.json")
+PACKAGE = (CONFIG, "pipeline.py", "requirements.txt", "README.md", "eval_report.json", waf.REVIEW_FILE)
 SPEC_KEYS = ("id", "title", "kind", "tier", "brief", "start_from")
 SLUG_RE = re.compile(r"^[a-z0-9_]+$")
 MAX_DIFF_LINES = 30
@@ -236,6 +236,42 @@ def refresh_decks(settings: Settings) -> List[str]:
     if done:
         logger.info("deck layout %s: regenerated the deck of %s", DECK_VERSION, ", ".join(done))
     return done
+
+
+def add_review(settings: Settings, res: Dict[str, Any], synth: Optional[UseCaseSynthesizer] = None) -> bool:
+    """Give a finished build saved before the Well-Architected review existed (or whose review could not run) its
+    review: one MCP lookup for the Framework pages and one reasoning-tier call, then REVIEW_FILE, the zip, the deck
+    and RESULT_FILE are rewritten and recorded as the saved version, so the project stays clean. A project with
+    unsaved chat edits is left alone (its save would otherwise be silently taken over). -> True when the review
+    was added; False when there was nothing to do or the review could not run (it is tried again next time)."""
+    pd = res.get("project_dir") or ""
+    if not (getattr(settings, "well_architected_enabled", True) and pd and res.get("final_status") and res.get("stages")
+            and res.get("customer_name") and os.path.isdir(pd)) or (res.get("well_architected") or {}).get("status") == "done":
+        return False
+    if is_dirty(pd):
+        return False
+    synth = synth or UseCaseSynthesizer(settings)
+    blueprint = {"summary": res.get("summary", ""), "stages": res["stages"], "deliverables": res.get("deliverables") or []}
+    review = synth.review_design(res["customer_name"], res.get("usecase_ask", ""), blueprint)
+    if review.get("status") != "done":
+        return False
+    text, _ = synth.pii.sanitize_text(waf.to_markdown(review, res["customer_name"]))
+    with _editor_lock(pd), file_lock(os.path.join(settings.cache_dir, f"build_{os.path.basename(pd)}")):
+        result = {**res, "well_architected": review}
+        write_text_atomic(os.path.join(pd, waf.REVIEW_FILE), text)
+        files = {name: _read(pd, name) for name in PACKAGE if os.path.isfile(os.path.join(pd, name))}
+
+        def zip_to(tmp: str) -> None:
+            with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
+                for name, content in sorted(files.items()):
+                    zf.writestr(name, content)
+        _write_binary(pd, result["zip_path"], zip_to)
+        _write_binary(pd, result["deck_path"], lambda tmp: render_deck(tmp, result))
+        write_text_atomic(os.path.join(pd, RESULT_FILE), persisted(result))
+        versions.mark_saved(pd, versions.snapshot(pd, "Well-Architected review added"))
+    res.update(well_architected=review, package_files=sorted(
+        n for n in (*PACKAGE, AUDIT_FILE) if os.path.isfile(os.path.join(pd, n))))
+    return True
 
 
 # ---------------------------------------------------------------------------------------------- change plan

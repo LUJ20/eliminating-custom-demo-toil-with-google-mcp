@@ -88,6 +88,7 @@ class Settings:
     acceptance_enabled: bool = True          # end-to-end acceptance tests of the chosen design after each build
     acceptance_min_pass: float = 0.8         # share of acceptance tests that must pass (and no safety failure)
     acceptance_max_tests: int = 6            # acceptance tests planned per build (3 to this many)
+    well_architected_enabled: bool = True    # review each design against the Well-Architected Framework pillars
     regression_on_upgrade: bool = True       # re-build the reference use cases after a model promotion; roll back on a regression
     generate_media: bool = True              # False: plan deliverables but never generate them (regression builds)
     cache_dir: str = os.path.join(ROOT, ".cache")                   # registry, telemetry, incidents, publish state
@@ -287,6 +288,7 @@ def get_settings() -> Settings:
         acceptance_enabled=_env_flag("ACCEPTANCE_TESTS", True),
         acceptance_min_pass=min(1.0, max(0.0, _env_number("ACCEPTANCE_MIN_PASS", 0.8))),
         acceptance_max_tests=min(12, max(3, _env_number("ACCEPTANCE_MAX_TESTS", 6))),
+        well_architected_enabled=_env_flag("WELL_ARCHITECTED_REVIEW", True),
         regression_on_upgrade=_env_flag("REGRESSION_ON_UPGRADE", True),
         policy=Policy(**{f.name: _env_number(f.name.upper(), f.default) for f in dataclasses.fields(Policy)}),
     )

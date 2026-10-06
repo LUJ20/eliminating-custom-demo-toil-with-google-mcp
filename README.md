@@ -17,10 +17,13 @@ scanned forms"*. The studio returns:
   system reads documents or photos (claims intake, invoices, damage photos), a synthetic example of that input is
   shown before its extracted result, with the same names, numbers and dates
 - **Story**: a hero, a challenge and a payoff, plus a presenter script
-- **Deck**: five editable slides (story, the same architecture flow as the app's diagram with the demo outputs
-  attached, deliverables, scorecard, package) with the talk track in the speaker notes; PowerPoint, or Google
-  Slides when a Drive folder is set (on Cloud Run: a shared-drive folder)
+- **Deck**: six editable slides (story, the same architecture flow as the app's diagram with the demo outputs
+  attached, deliverables, scorecard, Well-Architected review, package) with the talk track in the speaker notes;
+  PowerPoint, or Google Slides when a Drive folder is set (on Cloud Run: a shared-drive folder)
 - **Scorecard**: acceptance tests, judge scores and a privacy audit of the package
+- **Well-Architected review**: the design scored 1–5 on the five pillars of the Google Cloud Well-Architected
+  Framework, with one finding and one recommendation per pillar, each citing the Framework page it comes from; the
+  verdict is a design-review readiness gate ("Ready for design review" when every pillar scores 3 or more)
 - **Chat**: ask questions or request changes ("add Korean", "shorten the video"), answered with doc citations
 
 Naming: Google renamed Vertex AI to **Gemini Enterprise Agent Platform** ("Agent Platform"), Vertex AI Search to Agent Search and Agent Engine to Agent Runtime (release notes, mid-2026). The studio uses the current names everywhere, including in saved builds; APIs, roles and endpoints (`aiplatform.googleapis.com`) are unchanged.
@@ -45,7 +48,7 @@ flowchart TB
     end
     subgraph BG ["2b. Background: starts right after the plan, runs through steps 3 to 5"]
         direction LR
-        M["Demo media, only when the use case needs them:<br/>Imagen, Veo, TTS, Lyria · each output checked"] ~~~ T["Acceptance tests: 3-6 tests written from the ask,<br/>run on the design's own models, 6 at a time"]
+        M["Demo media, only when the use case needs them:<br/>Imagen, Veo, TTS, Lyria · each output checked"] ~~~ T["Acceptance tests: 3-6 tests written from the ask,<br/>run on the design's own models, 6 at a time"] ~~~ W["Well-Architected review: the design scored<br/>on the 5 Framework pillars (Framework pages via MCP)"]
     end
     subgraph CC ["3. Build (two at once)"]
         direction LR
@@ -62,11 +65,11 @@ flowchart TB
     CC --> JJ
     JJ --> S["5. Score: PASSED, or retry (up to 3 attempts ·<br/>a passing design keeps its media and tests, only the code is rewritten)"]
     BG --> S
-    S --> P["6. Package: architecture, code, media, deck, scorecard, PII audit<br/>stored in Cloud Storage, published to Drive + Slides on request"]
+    S --> P["6. Package: architecture, code, media, deck, scorecard, Well-Architected review, PII audit<br/>stored in Cloud Storage, published to Drive + Slides on request"]
     P -.-> A["The designed architecture itself can use any Google Cloud product the docs support<br/>(BigQuery, Document AI, Pub/Sub, Maps, Firebase, Contact Center AI, Spanner, ...)"]
 ```
 
-Read it top to bottom: the numbered steps run in that order, boxes side by side run at the same time, and the background pair runs while steps 3 to 5 proceed (at peak, four lanes are busy: code, citations, media, tests). **MCP for knowledge, direct APIs for execution.** The MCP server supplies official docs (grounding, model discovery, citations); the orchestrator calls Google APIs itself; models come from the self-upgrading resolver. No agent framework runs the studio: the steps are fixed, so code decides, not the model. ADK appears only inside generated demos that need an agent (support agents, voice concierges). Two lists not to confuse: the models and APIs in the boxes are what the **studio** calls to make the kit; the **architecture it designs** for a use case can use any Google Cloud product (it is written into the code and the deck, and its outputs are demonstrated with Gemini and the media models rather than by deploying the customer's stack).
+Read it top to bottom: the numbered steps run in that order, boxes side by side run at the same time, and the background trio runs while steps 3 to 5 proceed (at peak, five lanes are busy: code, citations, media, tests, review; the review is advisory and never changes the score). **MCP for knowledge, direct APIs for execution.** The MCP server supplies official docs (grounding, model discovery, citations); the orchestrator calls Google APIs itself; models come from the self-upgrading resolver. No agent framework runs the studio: the steps are fixed, so code decides, not the model. ADK appears only inside generated demos that need an agent (support agents, voice concierges). Two lists not to confuse: the models and APIs in the boxes are what the **studio** calls to make the kit; the **architecture it designs** for a use case can use any Google Cloud product (it is written into the code and the deck, and its outputs are demonstrated with Gemini and the media models rather than by deploying the customer's stack).
 
 - **No hard-coded models**: the studio finds the newest models in Google's docs, verifies them in your project,
   tests them on a golden set and rolls back automatically if quality drops.
@@ -143,7 +146,23 @@ To remove the app: `gcloud run services delete gemini-mcp-studio --region us-cen
 - Runs as its own service account: Agent Platform User (`roles/aiplatform.user`), Service Usage Consumer, and object access to one bucket.
 - `.env`, local projects and caches are never uploaded (see `.gcloudignore`).
 - Packages are scanned for secrets and personal data before they are published.
-- No WAF in the path by default: IAP sits directly on the Cloud Run service (no load balancer), which is enough for an allow-listed internal tool. For a public or regulated deployment add [Cloud Armor](https://docs.cloud.google.com/armor/docs/cloud-armor-overview) (Google Cloud's WAF: OWASP preconfigured rules, rate limiting, geo and IP rules): put an external Application Load Balancer with a [serverless NEG](https://docs.cloud.google.com/load-balancing/docs/https/setup-global-ext-https-serverless) in front of the service, attach a [security policy](https://docs.cloud.google.com/armor/docs/configure-security-policies) to its backend, move IAP onto that backend, and set the service ingress to `internal-and-cloud-load-balancing` so the run.app URL stops accepting traffic.
+- No web application firewall in the path by default: IAP sits directly on the Cloud Run service (no load balancer), which is enough for an allow-listed internal tool. For a public or regulated deployment add [Cloud Armor](https://docs.cloud.google.com/armor/docs/cloud-armor-overview) (OWASP preconfigured rules, rate limiting, geo and IP rules): put an external Application Load Balancer with a [serverless NEG](https://docs.cloud.google.com/load-balancing/docs/https/setup-global-ext-https-serverless) in front of the service, attach a [security policy](https://docs.cloud.google.com/armor/docs/configure-security-policies) to its backend, move IAP onto that backend, and set the service ingress to `internal-and-cloud-load-balancing` so the run.app URL stops accepting traffic.
+
+## Well-Architected Framework
+
+How the studio lines up with the [Google Cloud Well-Architected Framework](https://docs.cloud.google.com/architecture/framework) pillars, both as a service and in the designs it produces:
+
+| Pillar | The studio itself | The designs it generates |
+| :--- | :--- | :--- |
+| [Operational excellence](https://docs.cloud.google.com/architecture/framework/operational-excellence) | One-command deploy, CI on every change, every model call logged with its reason and metrics, self-upgrading model resolver with daily drift check and a regression suite after each upgrade | Standard parameters (project placeholder, location, models map), a README and `--dry-run` entry point in every package, no model IDs in code |
+| [Security, privacy, compliance](https://docs.cloud.google.com/architecture/framework/security) | IAP allow-list, least-privilege service account (three roles), secrets and personal data scrubbed before anything is published, model output treated as untrusted, generated code never executed | Google Cloud services only unless the ask names another vendor; the PII audit ships in the package |
+| [Reliability](https://docs.cloud.google.com/architecture/framework/reliability) | Troubleshooter around every model call (re-prompt, fallback model), up to 3 build attempts, runtime watch with rollback and 24 h quarantine, environment errors never blamed on a model | Acceptance tests prove the use case works end to end on the chosen models; every stage cites an official doc |
+| [Cost optimization](https://docs.cloud.google.com/architecture/framework/cost-optimization) | Media models called only when a deliverable needs them, per-build media cap, fast tier for code generation, a passing design keeps its media and tests across retries, pre-built samples shared by every visitor | The planner names a specific product per stage, so the deck shows what the customer would actually run and pay for |
+| [Performance optimization](https://docs.cloud.google.com/architecture/framework/performance-optimization) | Parallel lanes (code, citations, media, tests), 6 acceptance tests and 4 sample builds at a time, saved decks redrawn without a rebuild | Newest verified model per tier, with the documented features of that model configured in code |
+
+Every build also gets a **Well-Architected review of the design it produced** (`engine/well_architected.py`): the Framework's pillar pages are retrieved through the Developer Knowledge MCP server (never from the model's memory), and a reasoning-tier Gemini model scores the design 1–5 per pillar with one finding and one recommendation each, every one citing the page it comes from. The verdict is a design-review readiness gate in the spirit of a design-for-excellence review: **Ready for design review** when every pillar scores 3 or more, otherwise **Needs work before design review**. It runs in the background from the first valid plan, is advisory (it never changes the build score), and ships as a section of the result page, a slide in the deck and `WELL_ARCHITECTED_REVIEW.md` in the package. Saved demos built before the review existed get theirs at the next start (`python -m engine.prebuild --reviews`). Switch: `WELL_ARCHITECTED_REVIEW=false`.
+
+Not a substitute for an architecture review: the studio grounds and checks a demo design, it does not certify a production workload.
 
 ## Architecture
 
@@ -210,7 +229,7 @@ Nothing fails and the gap is visible. Extending the studio is additive: a new ca
 
 ```text
 Gemini+MCP/
-├── app.py                          # Streamlit web UI (use-case input, one Open-a-demo picker: pre-built samples + saved builds, 5 result sections, build chat)
+├── app.py                          # Streamlit web UI (use-case input, one Open-a-demo picker: pre-built samples + saved builds, 6 result sections, build chat)
 ├── deploy.sh                       # One-command Cloud Run + IAP deployment or local launch (--local)
 ├── Dockerfile                      # Container build definition (runs python -m engine.serve)
 ├── requirements.txt                # Runtime Python dependencies
@@ -232,10 +251,11 @@ Gemini+MCP/
 │   ├── media_qa.py                 # Per-deliverable quality checker, critic feedback, and best-attempt selector
 │   ├── charts.py                   # Splits a chat reply into markdown, code and ```chart CSV blocks the UI draws as line charts
 │   ├── acceptance.py               # End-to-end use-case acceptance test planner, runner, and evaluator
+│   ├── well_architected.py         # Well-Architected review: 5 pillars scored from Framework pages retrieved via MCP (advisory)
 │   ├── regression.py               # Post-upgrade regression runner against reference use cases
 │   ├── dependency_resolver.py      # PyPI/MCP-grounded package name & version verifier for requirements.txt
 │   ├── pii_sanitizer.py            # Secret and PII scanner/redactor for generated code and packages
-│   ├── deck_generator.py           # 5-slide PowerPoint (.pptx) and Google Slides generator
+│   ├── deck_generator.py           # 6-slide PowerPoint (.pptx) and Google Slides generator
 │   ├── slide_viewer.py             # HTML/SVG slide preview renderer for the Streamlit UI
 │   ├── story_doc.py                # Narrative arc and presenter talk-track generator (.html / Google Doc)
 │   ├── artifact_store.py           # Publisher for Google Drive folders and Cloud Storage buckets
@@ -262,9 +282,10 @@ Gemini+MCP/
 3. **Architecture & Story Planning**: Uses the `reasoning` tier (`brain.py`) to design pipeline stages, story scenes (hero, challenge, payoff), and a deliverables manifest (`manifest.py`).
 4. **Parallel Deliverable Generation**: As soon as the first valid plan is produced, `deliverables.py` launches background generation (up to 6 outputs in parallel) across video, image, speech, music, structured JSON/tables, agent traces, text, and chat demos. A chat demo is made like any other output: the director writes its system instruction with a **Context** section (the scene's facts and the hero's records) and a chart rule, the opener is played once against the real model, the first reply is saved (`.md`) and checked on the transcript, and a rejected reply is played again with the reviewer's findings appended to the instruction. The UI opens the chat with that first exchange in place, draws any fenced `chart` CSV block as a line chart (`charts.py`), and can play the first reply again.
 5. **Acceptance Tests Start Early**: At that same first plan, `acceptance.py` plans 3–6 use-case-specific tests and runs them (6 in parallel) in the background against the design's models, overlapping code generation and judging instead of running after them. A test run is keyed by the design (stages, services, features, story), so a retry that keeps the design reuses it.
-6. **Code Generation & Packaging**: Uses the `fast` tier to generate `pipeline.py` (with `--dry-run` support) while citations are attached in parallel, resolves dependencies via `DependencyResolver` (in parallel with the judge), and scans all files for secrets/PII with `PIISanitizer`.
-7. **Scorecard & Retry Loop**: Evaluates the build using 5 LLM judge rubric rows and 6–7 programmatic checks, retrying up to 3 attempts with critic feedback. A retry whose design passed every check keeps the whole blueprint and rewrites only the code, so generated media and running acceptance tests carry over; only a design-level failure re-plans.
-8. **Deck, Story & Publishing**: Generates the five-slide deck (`deck_generator.py`: story or overview, the architecture flow, deliverables, proof, package; the talk track in the speaker notes; stamped with `DECK_VERSION`) and `.zip` archive in parallel, the presenter script (`story_doc.py`), then publishes artifacts via `ArtifactStore` to Google Drive or Cloud Storage. The architecture slide is the same picture as the app's diagram (`app.py` `build_architecture_dot`): one row of stage boxes coloured by tier (two rows above six stages), a dashed "Demo output" group with one card per output attached to the last stage by dashed connectors, the outcome, and a "What each stage does" strip; every shape stays editable, and `slide_viewer.py` draws the connectors and dashed borders in the in-app player. On Cloud Run the service account publishes to Drive with a Drive-scoped token (metadata server, or IAM Credentials as a fallback), so Google Slides works there too when the folder is in a shared drive.
+6. **Well-Architected Review Starts Early**: Also at that first plan, `well_architected.py` retrieves the Framework's five pillar pages (and the AI/ML perspective) through MCP, cached per process for a day, and asks the `reasoning` tier to score the design 1–5 per pillar with a finding, a recommendation and the source page for each; the answer is validated by code (every pillar, scores in range, sources that exist) and re-asked on failure. Keyed by the design like the acceptance tests, advisory, and shown as "Not reviewed" when MCP or the model is unavailable.
+7. **Code Generation & Packaging**: Uses the `fast` tier to generate `pipeline.py` (with `--dry-run` support) while citations are attached in parallel, resolves dependencies via `DependencyResolver` (in parallel with the judge), and scans all files for secrets/PII with `PIISanitizer`.
+8. **Scorecard & Retry Loop**: Evaluates the build using 5 LLM judge rubric rows and 6–7 programmatic checks, retrying up to 3 attempts with critic feedback. A retry whose design passed every check keeps the whole blueprint and rewrites only the code, so generated media and running acceptance tests carry over; only a design-level failure re-plans.
+9. **Deck, Story & Publishing**: Generates the deck (`deck_generator.py`: story or overview, the architecture flow, deliverables, proof, the Well-Architected review, package; the talk track in the speaker notes; stamped with `DECK_VERSION`) and `.zip` archive in parallel, the presenter script (`story_doc.py`), then publishes artifacts via `ArtifactStore` to Google Drive or Cloud Storage. The architecture slide is the same picture as the app's diagram (`app.py` `build_architecture_dot`): one row of stage boxes coloured by tier (two rows above six stages), a dashed "Demo output" group with one card per output attached to the last stage by dashed connectors, the outcome, and a "What each stage does" strip; every shape stays editable, and `slide_viewer.py` draws the connectors and dashed borders in the in-app player. On Cloud Run the service account publishes to Drive with a Drive-scoped token (metadata server, or IAM Credentials as a fallback), so Google Slides works there too when the folder is in a shared drive.
 
 Typical wall time: about 3 minutes for a data/agent use case, 8–10 minutes when the demo includes several video clips.
 
@@ -275,6 +296,7 @@ Typical wall time: about 3 minutes for a data/agent use case, 8–10 minutes whe
 4. **In the UI**: one sidebar picker, "Open a demo", lists `Custom`, the 8 samples and then every other saved build (newest first; a saved build of a sample's exact ask is reached through the sample's entry, never listed twice). Picking a sample opens its pre-built demo instantly; a sample built on older models or in the other mode still opens, with the caption "Built on older models; Create Custom Demo rebuilds it."; a sample not built yet only fills the form; picking a saved build loads it with its scorecard, outputs, chat and versions; `Custom` clears the form. Submitting unchanged text opens the saved demo (with a "Rebuild from scratch" button); any edit to the text builds fresh; a sample being pre-built right now is joined, not built twice. The picker keeps its selection when a new build appears in the list (an `on_change` callback records the choice, so a widget reset never clears the form).
 5. **Deck refresh without a rebuild**: a change to the slides alone (a bumped `DECK_VERSION`) does not make a sample stale. At start, before the pre-build, and whenever a saved build is opened, `build_editor.refresh_deck` redraws any deck made by an older layout from the stored result (`.studio_result.json`): about half a second per project, no model call, under the same build lock as the synthesizer. `versions.py` treats the deck as derived, so a redrawn deck is never an "unsaved change". CLI: `python -m engine.prebuild --decks`.
 6. **Chat refresh without a rebuild**: after the pre-build, `prebuild.refresh_chats` sweeps every saved project whose chat demo has no played first reply (builds from before chats were played) and calls `deliverables.redirect`: the chat is directed again, its opener played and the reply checked, about a minute per project on the models in use. The deliverables folder is volatile for `versions.py`, so this is not an "unsaved change" either. CLI: `python -m engine.prebuild --chats`.
+7. **Review backfill without a rebuild**: after the pre-build, `prebuild.refresh_reviews` gives every saved project that has no Well-Architected review (or whose review could not run) one in place (`build_editor.add_review`: one MCP lookup and one reasoning-tier call per project, a few at a time), rewrites `WELL_ARCHITECTED_REVIEW.md`, the zip, the deck and the result file, and records that as the saved version, so nothing shows up as an "unsaved change"; a project with unsaved chat edits is left alone. CLI: `python -m engine.prebuild --reviews`.
 
 #### 3.3 Self-Upgrading Model Resolver (`engine/model_resolver.py`)
 1. **Discover**: Scans Google Developer Knowledge MCP documentation for candidate model IDs across 11 tiers (`reasoning`, `fast`, `lite`, `live`, `image`, `image_fast`, `video`, `video_fast`, `music`, `speech`, `embedding`).
@@ -301,7 +323,7 @@ Every build, demo output, chat change and model upgrade is evaluated. Thresholds
 
 | Event | Evals |
 | :--- | :--- |
-| A build | Build scorecard (up to 3 attempts; a code-only retry keeps a passing design) · acceptance tests, started with the first valid plan and run alongside code generation and judging (6 at a time) · output checks on every demo output |
+| A build | Build scorecard (up to 3 attempts; a code-only retry keeps a passing design) · acceptance tests, started with the first valid plan and run alongside code generation and judging (6 at a time) · Well-Architected review of the chosen design (advisory) · output checks on every demo output |
 | A sample pre-build (app start, model promotion) | The same evals as a build: the saved samples are real builds |
 | A chat message | Question: citation check. Change: validation → change check (code changes are also re-judged) |
 | Daily model refresh | Promotion canary for new models · drift check on current models |
@@ -337,7 +359,17 @@ Every build, demo output, chat change and model upgrade is evaluated. Thresholds
 
 Acceptance tests run the **design** (stages + chosen models), not the generated code.
 
-#### 4.4 Demo outputs — is each output right? (`engine/media_qa.py`)
+#### 4.4 Well-Architected review — is the design well built? (`engine/well_architected.py`)
+
+| Rule | Pass |
+| :--- | :--- |
+| W1 Grounded in the Framework | The pillar pages come from the Developer Knowledge MCP server (Framework pages first, at most 8); no pages, no review ("Not reviewed", never a failed build) |
+| W2 Five pillars, scored 1–5 | Operational excellence · security, privacy and compliance · reliability · cost optimization · performance optimization; each with a finding about this design and a recommendation naming a Google Cloud service or setting, each citing one retrieved page (checked by code; a bad answer is re-asked with the reason) |
+| W3 Readiness gate | **Ready for design review** = every pillar **3 or more**; otherwise **Needs work before design review** |
+
+The review is advisory: it never changes the build score or triggers a retry. Judged by the `reasoning` tier; the same model and location policy as the other judges. Switch: [`WELL_ARCHITECTED_REVIEW`].
+
+#### 4.5 Demo outputs — is each output right? (`engine/media_qa.py`)
 
 | Output | Critical checks | Soft checks |
 | :--- | :--- | :--- |
@@ -352,7 +384,7 @@ Acceptance tests run the **design** (stages + chosen models), not the generated 
 
 A critical failure regenerates the output with the findings, up to 2 more rounds [`MEDIA_RETRIES`], best kept (a chat is played again with the findings appended to its system instruction). The live **Demo output quality** row = all outputs pass their critical checks; with the sidebar switch **Show output checks** on, each output also shows one collapsed "Checks: n/m passed" line with the reviewer's summary (off by default; a failed check still highlights that output's Regenerate button).
 
-#### 4.5 Chat — is the answer or change right? (`engine/build_editor.py`)
+#### 4.6 Chat — is the answer or change right? (`engine/build_editor.py`)
 
 | Rule | Pass |
 | :--- | :--- |
@@ -364,7 +396,7 @@ A critical failure regenerates the output with the findings, up to 2 more rounds
 | C6 Refusals | Studio changes, unverified models, disabling security, over the cost cap |
 | C7 Intent test set (36 requests across all use-case types) | 90 % or more routed correctly as question / change / refusal |
 
-#### 4.6 Model upgrades — is a new model at least as good, and does it stay good? (`engine/model_resolver.py`, `engine/regression.py`)
+#### 4.7 Model upgrades — is a new model at least as good, and does it stay good? (`engine/model_resolver.py`, `engine/regression.py`)
 
 | Rule | Pass |
 | :--- | :--- |
@@ -377,7 +409,7 @@ A critical failure regenerates the output with the findings, up to 2 more rounds
 
 On failure the model is **held** (not promoted) or **rolled back** to the last known good one and **quarantined for 24 h** [`QUARANTINE_HOURS`]. If the older model fails the same task the same way, the newer one is restored (the task is at fault, not the model). If every regression build errors, the result is inconclusive and nothing is rolled back.
 
-#### 4.7 Rules that always apply, and known limits
+#### 4.8 Rules that always apply, and known limits
 
 1. No hard-coded model IDs anywhere; models come from the resolver and generated code reads them from config.
 2. Environment failures (expired credentials, network, disabled API, permissions, rate limits) never count against a model.
@@ -391,7 +423,7 @@ On failure the model is **held** (not promoted) or **rolled back** to the last k
 * **Cloud Run Mode** (`./deploy.sh --project <ID>`):
   - Provisions required GCP APIs, a dedicated least-privilege service account (`gemini-mcp-studio`), and a Cloud Storage bucket (`<project>-gemini-mcp-studio`).
   - Deploys the container to Cloud Run behind **Identity-Aware Proxy (IAP)** so only authorized users/groups can access the studio.
-  - `engine/serve.py` warms up the model registry in `.cache/` on startup, runs `engine/project_sync.py` in a background daemon thread to restore and back up `generated_projects/` to `gs://<bucket>/_projects/` every 60 seconds, and then starts `engine/prebuild.py` (after the restore and once models are resolved) so a fresh instance fills in whatever samples the bucket did not have, without waiting for a visitor; the same thread then redraws old decks and plays the first reply of any chat demo that has none.
-* **Knobs**: `PREBUILD_SAMPLES` (default `true`) turns the pre-build off; `PREBUILD_PARALLEL` (default 4) is how many samples build at once; `python -m engine.prebuild --status` reports which samples are current, `--force` rebuilds all, `--push` uploads them to the bucket, `--decks` only redraws the decks of saved projects for a new slide layout, `--chats` only re-directs and plays the chat demos that have no first reply yet.
+  - `engine/serve.py` warms up the model registry in `.cache/` on startup, runs `engine/project_sync.py` in a background daemon thread to restore and back up `generated_projects/` to `gs://<bucket>/_projects/` every 60 seconds, and then starts `engine/prebuild.py` (after the restore and once models are resolved) so a fresh instance fills in whatever samples the bucket did not have, without waiting for a visitor; the same thread then redraws old decks, adds the Well-Architected review to saved demos that predate it, and plays the first reply of any chat demo that has none.
+* **Knobs**: `PREBUILD_SAMPLES` (default `true`) turns the pre-build off; `PREBUILD_PARALLEL` (default 4) is how many samples build at once; `python -m engine.prebuild --status` reports which samples are current, `--force` rebuilds all, `--push` uploads them to the bucket, `--decks` only redraws the decks of saved projects for a new slide layout, `--chats` only re-directs and plays the chat demos that have no first reply yet, `--reviews` only adds the Well-Architected review to saved projects that have none.
 
-Offline unit tests: `python -m unittest discover -s tests` (389 tests, about 5 seconds, no cloud calls). CI (`.github/workflows/ci.yml`) runs the same suite plus a `bash -n deploy.sh` syntax check on every push and pull request, with the actions pinned to commit hashes and a read-only token.
+Offline unit tests: `python -m unittest discover -s tests` (414 tests, about 5 seconds, no cloud calls). CI (`.github/workflows/ci.yml`) runs the same suite plus a `bash -n deploy.sh` syntax check on every push and pull request, with the actions pinned to commit hashes and a read-only token.

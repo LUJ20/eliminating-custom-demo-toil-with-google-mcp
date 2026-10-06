@@ -28,6 +28,7 @@ from engine import prebuild
 from engine import regression
 from engine import media
 from engine import story_doc
+from engine import well_architected as waf
 from engine.artifact_store import ArtifactStore
 from engine.common import redact
 from engine.config import (Settings, default_bucket, drive_folder_id, get_settings, on_cloud_run, valid_bucket,
@@ -686,6 +687,26 @@ def render_rubric(res: dict) -> None:
                   for m in rows], hide_index=True, width="stretch")
 
 
+def render_well_architected(res: dict) -> None:
+    """The Well-Architected review: the verdict line, the reviewer's summary and one row per pillar with its
+    score, finding, recommendation and the Framework page it cites. Advisory: it never changes the build score."""
+    st.subheader("5. Well-Architected review")
+    rev = res.get("well_architected") or {}
+    if rev.get("status") != "done":
+        st.markdown("**Not reviewed**")
+        st.caption(rev.get("summary") or "This build was saved before the review existed. Rebuild from scratch to get it.")
+        return
+    st.markdown(f"**{rev['verdict']}** · average {rev['average']}/5 · {len(rev['pillars'])} pillars")
+    st.caption(f"Each pillar is scored 1-5 by a Gemini model that reads only the Framework pages retrieved through "
+               f"the Developer Knowledge MCP server; ready means every pillar scores {waf.MIN_PILLAR_SCORE} or more. "
+               "A starting point for a design review, not a certification.")
+    st.markdown(md_escape(rev.get("summary", "")))
+    st.dataframe([{"Pillar": p["name"], "Score": f"{p['score']}/5", "Finding": p["finding"],
+                   "Recommendation": p["recommendation"], "Framework page": p["doc_url"]}
+                  for p in rev["pillars"]], hide_index=True, width="stretch",
+                 column_config={"Framework page": st.column_config.LinkColumn(display_text=r"https://[^/]+/(.+)")})
+
+
 GDOC_PREFIX = "https://docs.google.com/document/d/"
 
 
@@ -761,7 +782,7 @@ def slides_hint(settings: Settings) -> str:
 
 
 def render_downloads(res: dict, settings: Settings, pub: dict, story_file: str, story_html: str, dirty: bool) -> None:
-    st.subheader("5. Story script and architecture deck")
+    st.subheader("6. Story script and architecture deck")
     if dirty and not pub:
         st.info("This build has unsaved chat changes. Save them (right panel) to publish the updated deck.")
     if pub.get("fallback_reason"):
@@ -1255,6 +1276,8 @@ if "solution_result" in st.session_state:
         render_package(res, pub, dirty, settings)
         st.markdown("---")
         render_rubric(res)
+        st.markdown("---")
+        render_well_architected(res)
         st.markdown("---")
         render_downloads(res, settings, pub, story_file, story_html, dirty)
 
