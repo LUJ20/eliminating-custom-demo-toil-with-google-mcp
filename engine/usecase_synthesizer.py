@@ -37,7 +37,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import requests
 
-from engine import acceptance, brain, deliverables as dlv, manifest, versions
+from engine import acceptance, brain, deliverables as dlv, manifest, versions, well_architected as waf
 from engine.common import doc_title, doc_url, file_lock, is_product_doc, redact, slugify
 from engine.config import Settings, get_settings
 from engine.deck_generator import build_usecase_deck
@@ -59,7 +59,7 @@ MAX_GROUNDING_DOCS = 8
 MAX_DOC_LOOKUPS = 6
 PLAN_KEYS = ("summary", "stages", "deliverables", "story")  # the fields of a planner blueprint
 # Rubric rows about pipeline.py. When only these fail, the design passed: the next attempt keeps it and rewrites the
-# code. Every other row (requirements, grounding, demo coverage, story, model currency, citations) judges the design.
+# code. Every other row (requirements, grounding, demo coverage, story, models up to date, citations) judges the design.
 CODE_ROWS = frozenset({"Code implements the design", "Feature showcase", "Code validity", "Dependencies",
                        "Security / PII"})
 Check = Tuple[str, bool, str, str, str]  # (metric, passed, threshold, notes, fix for the next attempt)
@@ -133,11 +133,11 @@ class _Run:
     """A function running in a daemon thread; result() waits for it. Not an executor on purpose: a run the build
     no longer needs (the tests of a design it moved away from) must never hold up the result or the process."""
 
-    def __init__(self, fn: Callable[[], Any]):
+    def __init__(self, fn: Callable[[], Any], name: str = "design-job"):
         self.finished = threading.Event()
         self.value: Any = None
         self.error: Optional[BaseException] = None
-        threading.Thread(target=self._go, args=(fn,), daemon=True, name="acceptance-tests").start()
+        threading.Thread(target=self._go, args=(fn,), daemon=True, name=name).start()
 
     def _go(self, fn: Callable[[], Any]) -> None:
         try:
@@ -154,14 +154,15 @@ class _Run:
         return self.value
 
 
-class _DesignTests:
-    """The acceptance tests of every design a build plans, started the moment each plan exists. They test the
-    design (its stages, summary and story), never the code, so they run while the code is generated, judged and
-    retried instead of after it. A design is tested once: a retry that keeps the design keeps its tests, and the
-    summary for the chosen design is ready, or nearly ready, when the attempts end."""
+class _DesignJobs:
+    """One background job per design a build plans (the acceptance tests, the Well-Architected review), started
+    the moment each plan exists. They look at the design (its stages, summary and story), never the code, so they
+    run while the code is generated, judged and retried instead of after it. A design is handled once: a retry
+    that keeps the design keeps its job, and the result for the chosen design is ready, or nearly ready, when the
+    attempts end."""
 
-    def __init__(self, synth: "UseCaseSynthesizer", customer: str, ask: str, grounding: List[dict]):
-        self.synth, self.customer, self.ask, self.grounding = synth, customer, ask, grounding
+    def __init__(self, fn: Callable[[dict], Any], name: str):
+        self.fn, self.name = fn, name
         self.runs: Dict[str, _Run] = {}
 
     @staticmethod
@@ -180,16 +181,16 @@ class _DesignTests:
         k = self.key(blueprint)
         if k in self.runs:
             return False
-        snapshot = copy.deepcopy(blueprint)  # the build goes on editing its plan (doc citations); tests read a copy
-        self.runs[k] = _Run(lambda: self.synth._acceptance(self.customer, self.ask, snapshot, self.grounding))
+        snapshot = copy.deepcopy(blueprint)  # the build goes on editing its plan (doc citations); jobs read a copy
+        self.runs[k] = _Run(lambda: self.fn(snapshot), self.name)
         return True
 
     def done(self, blueprint: dict) -> bool:
         run = self.runs.get(self.key(blueprint))
         return run is not None and run.finished.is_set()
 
-    def result(self, blueprint: dict) -> dict:
-        """The summary of this design's tests (started now if they were not); waits for them to finish."""
+    def result(self, blueprint: dict) -> Any:
+        """This design's job result (started now if it was not); waits for it to finish."""
         self.start(blueprint)
         return self.runs[self.key(blueprint)].result()
 
@@ -217,7 +218,7 @@ def render_deck(path: str, result: Dict[str, Any]) -> str:
         stages=result["stages"], rubric=result["eval_metrics"], attempts=result["attempt_stats"],
         files=result["package_files"], whats_new=result["whats_new"], mode=result["mode"],
         deliverables=result["deliverables"], score=result["score"], final_status=result["final_status"],
-        story=result.get("story") or {})
+        story=result.get("story") or {}, well_architected=result.get("well_architected"))
 
 
 def persisted(result: Dict[str, Any]) -> str:
@@ -282,8 +283,10 @@ class UseCaseSynthesizer:
         media = {"started": False}
         demo: Optional[dict] = None  # deliverables + story the judge already accepted: later attempts keep them
         frozen: Optional[dict] = None  # what the next attempt keeps: the whole design, or just the accepted demo
-        tests = (_DesignTests(self, customer_name, usecase_ask, grounding)
+        tests = (_DesignJobs(lambda bp: self._acceptance(customer_name, usecase_ask, bp, grounding), "acceptance-tests")
                  if getattr(self.s, "acceptance_enabled", False) else None)
+        reviews = (_DesignJobs(lambda bp: self.review_design(customer_name, usecase_ask, bp), "well-architected")
+                   if getattr(self.s, "well_architected_enabled", True) else None)
 
         def start_media(blueprint: dict) -> None:
             """Generate the demo output in the background as soon as a plan exists, so the slow clips overlap
@@ -305,6 +308,9 @@ class UseCaseSynthesizer:
             if tests is not None and blueprint["stages"] and tests.start(blueprint):
                 say(f"Acceptance tests: planning end-to-end tests from the ask ({ROLES['planner']} tier) and running "
                     "them on this design in the background while the code is built")
+            if reviews is not None and blueprint["stages"] and reviews.start(blueprint):
+                say(f"Well-Architected review: scoring this design against the five Framework pillars "
+                    f"(Framework pages via MCP, {ROLES['judge']} tier) in the background")
 
         try:
             for n in range(1, total + 1):
@@ -370,12 +376,19 @@ class UseCaseSynthesizer:
             say(f"Acceptance tests: {row['value']} ({'pass' if row['pass'] else 'fail'}; "
                 f"{redact(str(row['notes']))[:160]})")
 
+        review: Optional[dict] = None
+        if reviews is not None and stages:
+            review = reviews.result(best.blueprint)
+            say(f"Well-Architected review: {review.get('verdict')}"
+                + (f" (average {review.get('average')}/5)" if review.get("status") == "done" else ""))
         report = {"final_status": final_status, "model_mode": self.s.mode, "rubric": rubric,
                   "attempts": stats, "incidents": len(self.doctor.incidents)}
         if accepted is not None:
             report["acceptance"] = accepted
-        files, audit = self.pii.sanitize_files({**best.files, "eval_report.json": json.dumps(report, indent=2)},
-                                               earlier=best.audit["redactions_applied"])
+        extra_files = {"eval_report.json": json.dumps(report, indent=2)}
+        if review is not None:
+            extra_files[waf.REVIEW_FILE] = waf.to_markdown(review, customer_name)
+        files, audit = self.pii.sanitize_files({**best.files, **extra_files}, earlier=best.audit["redactions_applied"])
         code = files["pipeline.py"]
         whats_new = self._whats_new(stages, code)
         models = _models(stages)
@@ -393,6 +406,8 @@ class UseCaseSynthesizer:
         }
         if accepted is not None:
             result["acceptance"] = accepted
+        if review is not None:
+            result["well_architected"] = review
         say("Writing the codebase package and the architecture deck")
         self._write_outputs(slug, files, lambda path: render_deck(path, result),
                             extra={RESULT_FILE: persisted(result)})
@@ -410,6 +425,21 @@ class UseCaseSynthesizer:
         return summary or acceptance.empty_summary(
             "acceptance tests could not run (the error is recorded as an incident in the build result)",
             float(getattr(self.s, "acceptance_min_pass", acceptance.DEFAULT_MIN_PASS)), ask)
+
+    def review_design(self, customer: str, ask: str, blueprint: dict) -> dict:
+        """The Well-Architected review of a design (engine/well_architected.py): the Framework's pillar pages from
+        MCP, then one reasoning-tier review that cites them. Runs in a worker thread during a build (so it never
+        calls `say`) and from build_editor.add_review for builds saved before the review existed. Never raises:
+        trouble is recorded as an incident and shown as 'Not reviewed'."""
+        docs = self.doctor.guard("Well-Architected docs", lambda: waf.framework_docs(self.mcp), [])
+        if not docs:
+            return waf.unavailable("the Framework pages could not be retrieved from the Developer Knowledge MCP server")
+        try:
+            rev, served = self.doctor.run("Well-Architected review", ROLES["judge"], lambda m, loc, hint: waf.review(
+                self.s, m, loc, hint, customer=customer, ask=ask, blueprint=blueprint, docs=docs))
+        except StepFailed as e:
+            return waf.unavailable(f"the review did not complete: {redact(str(e))[:200]}")
+        return {**rev, "model": served["model"]}
 
     def _prepare_models(self, say: Callable[[str], None]) -> None:
         """First use: resolve models now, or wait for the refresh already running. Read missing feature lists.
@@ -677,7 +707,7 @@ confirmed are listed there for review. Review generated code before running it i
         catalog = self.resolver.catalog()
         current = all(s["model"] and s["model"] == (catalog.get(s["tier"]) or {}).get("model") for s in ai)
         checks: List[Check] = [(
-            "Model currency", current, f"newest verified model per tier ({self.s.mode} mode)",
+            "Models up to date", current, f"newest verified model per tier ({self.s.mode} mode)",
             f"{len(ai)} AI stage(s) on the resolver's current models" if ai else "no AI stages in this design",
             "use only tiers that have a verified model")]
         if ai:

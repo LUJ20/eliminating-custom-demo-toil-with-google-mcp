@@ -28,13 +28,14 @@ from engine import prebuild
 from engine import regression
 from engine import media
 from engine import story_doc
+from engine import well_architected as waf
 from engine.artifact_store import ArtifactStore
 from engine.common import redact
 from engine.config import (Settings, default_bucket, drive_folder_id, get_settings, on_cloud_run, valid_bucket,
                            valid_project_id)
 from engine.manifest import DATA_KINDS, MEDIA_KINDS, kind_label
 from engine.mcp_knowledge_client import McpKnowledgeClient
-from engine.model_resolver import ROLES, ModelResolver
+from engine.model_resolver import ModelResolver
 from engine.pii_sanitizer import AUDIT_FILE
 from engine.samples import SAMPLES
 from engine.slide_viewer import render_presentation_player
@@ -184,31 +185,6 @@ def hourly_refresh_check(settings: Settings) -> bool:
         return False
     threading.Thread(target=_refresh_quietly, args=(settings,), name="model-refresh", daemon=True).start()
     return True
-
-
-def render_models(resolver: ModelResolver, settings: Settings) -> None:
-    catalog = resolver.catalog()
-    brain_line = " · ".join(f"{role}: {catalog[tier]['model']}" for role, tier in
-                            (("planner + judge", ROLES["planner"]), ("codegen", ROLES["codegen"])) if tier in catalog)
-    with st.expander(f"Models in use, {settings.mode} mode: auto-resolved, newest verified ({brain_line or 'none yet'})"):
-        st.caption(f"Discovered in Developer Knowledge MCP docs, verified callable in `{settings.project_id}`, "
-                   "canary-gated before promotion, rolled back automatically on regression. Features are read from "
-                   f"each model's official page. Last refresh: {(resolver.reg.get('refreshed_at') or 'never').replace('T', ' ')} "
-                   f"UTC, every {settings.refresh_hours:g} h.")
-        st.dataframe(resolver.rows(), hide_index=True, width="stretch")
-        if st.button("Re-resolve models now", key="reresolve"):
-            with st.spinner("Re-resolving: MCP discovery, verification, canary, features..."):
-                st.session_state["resolver_notes"] = resolver.refresh(force=True, log=logger.info)
-            st.rerun()
-        if st.session_state.get("resolver_notes"):
-            st.caption("Last run: " + " | ".join(st.session_state["resolver_notes"]))
-        history = resolver.history_rows()
-        if history:
-            st.markdown("**Promotions, holds, rollbacks**")
-            st.dataframe(history, hide_index=True, width="stretch")
-        if resolver.reg.get("unclassified"):
-            st.caption("IDs seen in docs that match no tier yet (new families or variants): "
-                       + ", ".join(resolver.reg["unclassified"][:12]))
 
 
 # ---------------------------------------------------------------------------------------------- architecture
@@ -711,6 +687,26 @@ def render_rubric(res: dict) -> None:
                   for m in rows], hide_index=True, width="stretch")
 
 
+def render_well_architected(res: dict) -> None:
+    """The Well-Architected review: the verdict line, the reviewer's summary and one row per pillar with its
+    score, finding, recommendation and the Framework page it cites. Advisory: it never changes the build score."""
+    st.subheader("5. Well-Architected review")
+    rev = res.get("well_architected") or {}
+    if rev.get("status") != "done":
+        st.markdown("**Not reviewed**")
+        st.caption(rev.get("summary") or "This build was saved before the review existed. Rebuild from scratch to get it.")
+        return
+    st.markdown(f"**{rev['verdict']}** · average {rev['average']}/5 · {len(rev['pillars'])} pillars")
+    st.caption(f"Each pillar is scored 1-5 by a Gemini model that reads only the Framework pages retrieved through "
+               f"the Developer Knowledge MCP server; ready means every pillar scores {waf.MIN_PILLAR_SCORE} or more. "
+               "A starting point for a design review, not a certification.")
+    st.markdown(md_escape(rev.get("summary", "")))
+    st.dataframe([{"Pillar": p["name"], "Score": f"{p['score']}/5", "Finding": p["finding"],
+                   "Recommendation": p["recommendation"], "Framework page": p["doc_url"]}
+                  for p in rev["pillars"]], hide_index=True, width="stretch",
+                 column_config={"Framework page": st.column_config.LinkColumn(display_text=r"https://[^/]+/(.+)")})
+
+
 GDOC_PREFIX = "https://docs.google.com/document/d/"
 
 
@@ -786,7 +782,7 @@ def slides_hint(settings: Settings) -> str:
 
 
 def render_downloads(res: dict, settings: Settings, pub: dict, story_file: str, story_html: str, dirty: bool) -> None:
-    st.subheader("5. Story script and architecture deck")
+    st.subheader("6. Story script and architecture deck")
     if dirty and not pub:
         st.info("This build has unsaved chat changes. Save them (right panel) to publish the updated deck.")
     if pub.get("fallback_reason"):
@@ -923,14 +919,18 @@ def render_build_chat(res: dict, settings: Settings) -> None:
 
 
 @st.dialog("Discard unsaved changes?")
-def discard_dialog(settings: Settings) -> None:
-    st.write("The build goes back to its last saved version.")
+def discard_dialog(settings: Settings, project_dir: str = "") -> None:
+    """Confirm, then put the project (the open build by default) back to its last saved version."""
+    res = st.session_state.get("solution_result") or {}
+    project_dir = project_dir or res["project_dir"]
+    st.write(f"**{md_escape(draft_label(project_dir))}** goes back to its last saved version.")
     a, b = st.columns(2)
     if a.button("Discard", type="primary", width="stretch"):
-        res = st.session_state["solution_result"]
-        st.session_state["solution_result"] = new = build_editor.discard(settings, res["project_dir"])
-        if new.get("deliverables_started"):
-            st.session_state[f"deliverables_started_{new['build_id']}"] = True
+        new = build_editor.discard(settings, project_dir)
+        if res.get("project_dir") == project_dir:
+            st.session_state["solution_result"] = new
+            if new.get("deliverables_started"):
+                st.session_state[f"deliverables_started_{new['build_id']}"] = True
         st.rerun()
     if b.button("Cancel", width="stretch"):
         st.rerun()
@@ -1059,6 +1059,16 @@ def unsaved_drafts(settings: Settings) -> list:
     return [d for d in dirs if os.path.isdir(os.path.join(d, ".versions")) and build_editor.is_dirty(d)]
 
 
+def draft_label(project_dir: str) -> str:
+    """A project's customer name (read from its saved result, without loading the build), else its folder name."""
+    try:
+        with open(os.path.join(project_dir, RESULT_FILE), encoding="utf-8") as f:
+            name = str(json.load(f).get("customer_name") or "")
+    except (OSError, ValueError):
+        name = ""
+    return " ".join(name.split())[:80] or os.path.basename(project_dir)
+
+
 # ---------------------------------------------------------------------------------------------- page
 st.set_page_config(page_title="Gemini + MCP Use-Case Studio | Google Developer Knowledge", layout="wide")
 st.markdown(CSS, unsafe_allow_html=True)
@@ -1149,7 +1159,7 @@ if resolver.is_empty():
         first_run_notes = resolver.refresh(log=logger.info)
     if resolver.is_empty():
         st.warning("No Gemini model could be verified yet: " + redact(" | ".join(first_run_notes))[:300]
-                   + ". The next build tries again; 'Models in use' has a re-resolve button.")
+                   + ". The next build tries again; `python -m engine.model_resolver --refresh` forces a retry now.")
 else:
     hourly_refresh_check(settings)
 regression.install(settings)  # after a model promotion: re-build the reference use cases, roll back on a regression
@@ -1237,16 +1247,18 @@ with st.sidebar:
     if drafts:
         st.markdown("---")
         st.subheader("Unsaved changes")
-        st.caption("Chat changes are kept until you save or discard them.")
+        st.caption("Chat changes are kept until you save or discard them. Each build below has some.")
         current_dir = (st.session_state.get("solution_result") or {}).get("project_dir")
         for i, d in enumerate(drafts):
-            name = os.path.basename(d)
-            r1, r2 = st.columns([3, 2])
-            r1.markdown(f"`{md_escape(name)}`")
+            r1, r2, r3 = st.columns([3, 2, 2])
+            r1.markdown(f"**{md_escape(draft_label(d))}**" + (" (open)" if d == current_dir else ""))
+            r1.caption(os.path.basename(d))
             if d != current_dir and r2.button("Resume", key=f"resume_{i}", width="stretch"):
                 st.session_state["solution_result"] = opened = build_editor.load_result(settings, d)
                 fill_form(opened.get("customer_name"), opened.get("usecase_ask"), sample_for(opened))
                 st.rerun()
+            if r3.button("Discard", key=f"discard_draft_{i}", width="stretch"):
+                discard_dialog(settings, d)
 
 if "solution_result" in st.session_state:
     res = st.session_state["solution_result"]
@@ -1264,6 +1276,8 @@ if "solution_result" in st.session_state:
         render_package(res, pub, dirty, settings)
         st.markdown("---")
         render_rubric(res)
+        st.markdown("---")
+        render_well_architected(res)
         st.markdown("---")
         render_downloads(res, settings, pub, story_file, story_html, dirty)
 

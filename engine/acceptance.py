@@ -31,7 +31,6 @@ ACCEPTANCE_METRIC = "Use case works end to end"
 TEST_TYPES = ("answer", "structured", "agent", "retrieval", "classification", "translation", "conversation",
               "generation")
 SCHEMA_TYPES = ("string", "number", "boolean", "array", "object")
-JUDGE_CHECKS = ("facts_present", "citations_support", "language", "safe", "on_task")
 SOFT_CHECKS = frozenset({"on_task"})  # reported, but a test can pass without them
 NEEDS_FACTS = frozenset({"answer", "conversation", "generation"})
 MIN_TESTS, DEFAULT_TESTS, MAX_TESTS = 3, 6, 12

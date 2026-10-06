@@ -25,6 +25,7 @@ from pptx.oxml.ns import qn
 from pptx.util import Emu, Inches, Pt
 
 from engine import manifest
+from engine.well_architected import MIN_PILLAR_SCORE as MIN_PILLAR
 
 FONT = "Google Sans"
 BLUE = RGBColor(26, 115, 232)
@@ -56,12 +57,12 @@ DEFAULT_COLORS = (WHITE, BLUE)
 SLIDE_W, SLIDE_H = Inches(13.333), Inches(7.5)
 LEFT, CONTENT_W, BODY_TOP = Inches(0.75), Inches(11.833), Inches(1.35)
 MAX_CELL_CHARS = 240
-MAX_FEATURE_ROWS = 8
 MAX_RUBRIC_ROWS = 11
 BLANK_LAYOUT = 6
-DECK_VERSION = "6"  # the slide layout; stamped into every deck. Bump it when the slides change: saved decks made
+DECK_VERSION = "7"  # the slide layout; stamped into every deck. Bump it when the slides change: saved decks made
                     # by an older layout are then regenerated from the stored result (build_editor.refresh_deck).
                     # 6: product names as the docs use them today (Agent Platform, formerly Vertex AI)
+                    # 7: Well-Architected review slide after the scorecard
 GREY_LINE = RGBColor(154, 160, 166)
 OUTPUT_COL_W = Inches(2.4)  # the "Demo output" column of the architecture slide
 MAX_OUTPUT_CARDS = 5        # outputs drawn in that column; the rest are counted (all are on the deliverables slide)
@@ -186,7 +187,6 @@ def _table(slide, header: List[str], rows: List[List[Cell]], widths: List[float]
 # ---------------------------------------------------------------------------------------------- slides
 LIGHT_GREEN = RGBColor(230, 244, 234)
 GREY_FILL = RGBColor(241, 243, 244)
-MAX_PER_ROW = 4
 TIER_LABELS = {"reasoning": "Gemini reasoning", "fast": "Gemini fast", "lite": "Gemini lite", "live": "Gemini Live",
                "image": "Image", "image_fast": "Image (fast)", "video": "Video", "video_fast": "Video (fast)",
                "speech": "Speech", "music": "Music", "embedding": "Embeddings"}
@@ -491,12 +491,36 @@ def _package(prs, files: List[str], mode: str) -> None:
     ], WHITE, BORDER)
 
 
+def _well_architected(prs, customer: str, rev: dict) -> None:
+    """The Well-Architected review: verdict, then one row per pillar with its finding, recommendation and the
+    Framework page it cites."""
+    done = rev.get("status") == "done"
+    sub = (f"{rev.get('verdict', '')} · average {rev.get('average', 0)}/5 · every pillar at or above "
+           f"{MIN_PILLAR} means ready" if done else f"Not reviewed: {_cut(rev.get('summary', ''), 120)}")
+    notes = ("The design was scored 1-5 per pillar of the Google Cloud Well-Architected Framework by a Gemini "
+             "reasoning model reading only the Framework pages retrieved through the Developer Knowledge MCP "
+             "server. It is a starting point for a design review, not a certification.\n" + _cut(rev.get("summary", ""), 600)
+             + "\n" + "\n".join(f"- {p['name']}: {p['score']}/5. {p['finding']} Recommendation: {p['recommendation']} "
+                                  f"({p.get('doc_url', '')})" for p in rev.get("pillars") or []))
+    s = _new_slide(prs, f"Well-Architected review for {customer}", sub, notes)
+    rows = [[Cell(p["name"]), Cell(f"{p['score']}/5", color=GREEN if p["score"] >= MIN_PILLAR else FAIL_RED, bold=True),
+             Cell(_cut(p["finding"], 150)), Cell(_cut(p["recommendation"], 150)),
+             Cell(_cut(p.get("doc_title") or "", 50), link=p.get("doc_url") or "")] for p in rev.get("pillars") or []]
+    if rows:
+        _table(s, ["Pillar", "Score", "Finding", "Recommendation", "Framework page"], rows, [2.0, 0.7, 3.6, 3.6, 1.9],
+               size=8.5)
+    else:
+        _textbox(s, LEFT, Inches(1.8), Inches(8.4), Inches(1.0),
+                 [Line("The review did not run for this build; rebuild to get it.", 13, MUTED)])
+
+
 def build_usecase_deck(output_path: str, *, customer: str, ask: str, summary: str, stages: List[dict],
                        rubric: List[dict], attempts: List[dict], files: List[str], whats_new: List[dict], mode: str,
                        deliverables: List[dict], score: float, final_status: str,
-                       story: Optional[dict] = None) -> str:
-    """Write the editable five-slide deck for one build to `output_path` (the story opens it when the build has
-    one, else the solution overview). -> output_path."""
+                       story: Optional[dict] = None, well_architected: Optional[dict] = None) -> str:
+    """Write the editable deck for one build to `output_path` (the story opens it when the build has one, else the
+    solution overview; a Well-Architected review slide follows the scorecard when the build has one). ->
+    output_path."""
     prs = pptx.Presentation()
     prs.slide_width, prs.slide_height = SLIDE_W, SLIDE_H
     props = prs.core_properties
@@ -510,6 +534,8 @@ def build_usecase_deck(output_path: str, *, customer: str, ask: str, summary: st
     _architecture(prs, customer, stages, mode, story if story and story.get("beats") else None, deliverables)
     _deliverables(prs, customer, deliverables)
     _proof(prs, customer, rubric, attempts, whats_new, score, final_status)
+    if well_architected:
+        _well_architected(prs, customer, well_architected)
     _package(prs, files, mode)
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     prs.save(output_path)

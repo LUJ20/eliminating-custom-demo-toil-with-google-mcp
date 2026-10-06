@@ -18,6 +18,8 @@ demo at once instead of starting a ten-minute build.
   played again in place (engine/deliverables.redirect), no rebuild of the project.
 - refresh_decks(): a new slide layout (deck_generator.DECK_VERSION) needs no rebuild: the decks of all saved
   projects are regenerated from their stored results at app start and before a CLI run (seconds, no model call).
+- refresh_reviews(): a saved project built before the Well-Architected review existed gets its review in place
+  (build_editor.add_review: one MCP lookup and one model call per project), no rebuild.
 
     python -m engine.prebuild                 # build the missing or stale samples
     python -m engine.prebuild --force --push  # rebuild every sample, then upload the projects to the bucket
@@ -217,6 +219,37 @@ def refresh_chats(settings: Settings, log: Callable[[str], None] = logger.info) 
     return done
 
 
+def refresh_reviews(settings: Settings, log: Callable[[str], None] = logger.info,
+                    parallel: Optional[int] = None) -> List[str]:
+    """Give every saved project built before the Well-Architected review existed (or whose review could not run)
+    its review (build_editor.add_review: one MCP lookup and one reasoning-tier call per project, a few projects at
+    a time). Never raises. -> the project slugs that got a review."""
+    if not getattr(settings, "well_architected_enabled", True):
+        return []
+    try:
+        from engine import build_editor  # heavy imports: only when it really runs
+        from engine.usecase_synthesizer import UseCaseSynthesizer
+        synth = UseCaseSynthesizer(settings)
+    except Exception as e:  # pragma: no cover - import trouble is an environment problem
+        logger.warning("review refresh failed: %s", redact(str(e))[:200])
+        return []
+
+    def one(pd: str) -> Optional[str]:
+        try:
+            return os.path.basename(pd) if build_editor.add_review(settings, build_editor.load_result(settings, pd),
+                                                                   synth) else None
+        except Exception as e:  # one project's trouble never stops the sweep
+            logger.warning("review of %s skipped: %s", os.path.basename(pd), redact(str(e))[:200])
+            return None
+
+    projects = _saved_projects(settings)
+    with ThreadPoolExecutor(max(1, min(parallel or parallelism(), len(projects) or 1))) as ex:
+        done = [slug for slug in ex.map(one, projects) if slug]
+    if done:
+        log(f"Well-Architected review added to saved demos: {', '.join(done)}")
+    return done
+
+
 def _saved_projects(settings: Settings) -> List[str]:
     """Every finished saved project (has a config and a result), sorted by name."""
     out = []
@@ -338,8 +371,9 @@ def install(settings: Settings) -> bool:
 
 
 def start_background(settings: Settings) -> Optional[threading.Thread]:
-    """At app start: regenerate decks made by an older slide layout, build the missing or stale samples, then replay
-    chats that predate the assistant's context, in a daemon thread, once the models are resolved and, when the bucket restore is running (engine/project_sync.py),
+    """At app start: regenerate decks made by an older slide layout, build the missing or stale samples, add the
+    Well-Architected review to saved demos that predate it, then replay chats that predate the assistant's context,
+    in a daemon thread, once the models are resolved and, when the bucket restore is running (engine/project_sync.py),
     once it is done (so demos already in the bucket are not rebuilt). -> the thread, or None when pre-building is
     off."""
     if not enabled(settings):
@@ -357,7 +391,8 @@ def start_background(settings: Settings) -> Optional[threading.Thread]:
                 logger.info("sample pre-build skipped: no models resolved yet")
                 return
             run(settings)
-            refresh_chats(settings)  # after the builds: old chats are replayed without competing for quota
+            refresh_reviews(settings)  # after the builds: saved demos get their review without competing for quota
+            refresh_chats(settings)  # then old chats are replayed
         except Exception:  # thread boundary: log with traceback instead of dying silently
             logger.exception("sample pre-build failed")
 
@@ -377,6 +412,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                                                         " older slide layout (no build)")
     ap.add_argument("--chats", action="store_true", help="only direct and play again the chats of saved projects that"
                                                          " have no played first reply (no build)")
+    ap.add_argument("--reviews", action="store_true", help="only add the Well-Architected review to saved projects"
+                                                           " that have none (one model call each, no build)")
     ap.add_argument("--parallel", type=int, metavar="N", help=f"samples built at once (default {DEFAULT_PARALLEL}"
                                                                " or PREBUILD_PARALLEL)")
     a = ap.parse_args(argv)
@@ -397,6 +434,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     done = refresh_decks(s, log=lambda m: print(m))
     if a.decks:
         print(f"  {len(done)} deck(s) regenerated; the others were already on slide layout {DECK_VERSION}")
+        return 0
+    if a.reviews:
+        done = refresh_reviews(s, log=lambda m: print(m), parallel=a.parallel)
+        print(f"  {len(done)} project(s) reviewed; the others already had a review")
         return 0
     if a.chats:
         queued = refresh_chats(s, log=lambda m: print(m))

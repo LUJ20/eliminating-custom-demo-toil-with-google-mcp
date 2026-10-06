@@ -82,10 +82,12 @@ class OfflineTestCase(unittest.TestCase):
         # active gcloud account). ".test" is a reserved TLD (RFC 2606) and not on the sanitizer's safe list,
         # so this account is scrubbed exactly like a real one, and no real identity is committed to the repo.
         # acceptance_enabled=False: the end-to-end acceptance tests add model calls to every build; tests that
-        # cover them turn them on explicitly (tests/test_acceptance.py).
+        # cover them turn them on explicitly (tests/test_acceptance.py). The same goes for the Well-Architected
+        # review (tests/test_well_architected.py).
         self.settings = Settings(project_id="demo-proj", project_number="123456789012", bucket="demo-bucket",
                                  gcloud_account="jane.tester@corp.test", cache_dir=os.path.join(self.tmp, "cache"),
-                                 output_dir=os.path.join(self.tmp, "out"), acceptance_enabled=False)
+                                 output_dir=os.path.join(self.tmp, "out"), acceptance_enabled=False,
+                                 well_architected_enabled=False)
         for target, effect in (("engine.config._gcloud", self._blocked),
                                ("requests.sessions.Session.request", self._blocked),
                                ("time.sleep", lambda *_: None)):

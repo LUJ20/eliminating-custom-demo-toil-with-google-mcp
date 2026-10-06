@@ -126,6 +126,33 @@ class ShortCardsTest(unittest.TestCase):
             self.assertIn(text, seen["prompt"])
 
 
+class VisualInputsTest(unittest.TestCase):
+    """An extraction or vision demo shows the input (scanned form, invoice, photo) before its result."""
+
+    def test_planner_director_and_judge_cover_example_inputs(self):
+        seen = {}
+
+        def fake_generate(settings, model, prompt, **kw):
+            seen.setdefault("prompts", []).append(prompt)
+            raise vertex.VertexError(500, "stop here", model)
+
+        deliverable = {"id": "fields", "title": "Extracted claim", "kind": "structured", "tier": "fast", "brief": "b",
+                       "start_from": "", "variants": [{"label": "Main", "language": ""}]}
+        with mock.patch.object(vertex, "generate", side_effect=fake_generate):
+            with self.assertRaises(vertex.VertexError):
+                brain.plan(mock.Mock(), "m", "global", "", customer="Fabrikam", ask="Read scanned claim forms",
+                           grounding=[], catalog=CATALOG, max_assets=8)
+            with self.assertRaises(vertex.VertexError):
+                brain.direct_media(mock.Mock(), "m", "global", "", customer="Fabrikam", ask="a", summary="s",
+                                   deliverables=[deliverable])
+        planner, director = seen["prompts"]
+        self.assertIn("one image deliverable per input kind", planner)
+        self.assertIn("listed before the\ndeliverable that extracts or analyses it", planner)
+        self.assertIn("exactly the facts that deliverable reports", director)
+        self.assertIn("legible fields (5 to 8, no dense fine print)", director)
+        self.assertIn("an example of that input shown before its result", brain.CRITERIA_HELP["deliverable_coverage"])
+
+
 class ProductDocsFirstTest(OfflineTestCase):
     BLOG = "documents/developer.chrome.com/blog/webrtc-hits-firefox-android-and-ios"
     DOC = "documents/docs.cloud.google.com/run/docs/overview"
