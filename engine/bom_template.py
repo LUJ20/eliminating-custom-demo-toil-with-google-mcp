@@ -55,6 +55,8 @@ def path(settings: Optional[Settings] = None) -> str:
     local = local_path(s)
     if os.path.isfile(local):
         return local
+    if getattr(s, "bom_template_path", ""):
+        return ""  # an explicit path that is missing means "no template": nothing is fetched
     bucket = getattr(s, "bucket", "") or ""
     if not bucket:
         return ""
