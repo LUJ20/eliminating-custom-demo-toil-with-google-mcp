@@ -179,13 +179,16 @@ def render_presentation_player(deck_path: str, gslides_url: Optional[str] = None
                     is_bold = False
                     col_hex = "#202124"
                     fonts = [f for f in (p_obj.font, *(r.font for r in p_obj.runs[:1])) if f is not None]
+                    sized = False
                     for f in fonts:
                         try:
                             if f.size:
-                                pt_val = float(f.size.pt)
+                                pt_val, sized = float(f.size.pt), True
                                 break
                         except Exception:
                             continue
+                    if not sized and getattr(shp, "is_placeholder", False):
+                        pt_val = 24.0  # a title placeholder inherits its size from the layout (the template's 24 pt)
                     for f in fonts:
                         try:
                             if f.bold:
@@ -219,11 +222,23 @@ def render_presentation_player(deck_path: str, gslides_url: Optional[str] = None
                         f'line-height:1.22;margin-bottom:0.2cqw;word-break:break-word;">{body}</div>'
                     )
 
-            pad_css = "0.5cqw 0.75cqw" if paras_html else "0"
+            pad_css, anchor_css = "0", ""
+            if paras_html:  # the text frame's own insets and vertical anchor (the template's headers clear their marks)
+                try:
+                    tf = shp.text_frame
+                    mt, mr, mb, ml = (float(v or 0) / sw * 100.0 for v in (tf.margin_top, tf.margin_right,
+                                                                           tf.margin_bottom, tf.margin_left))
+                    pad_css = f"{mt:.2f}cqw {mr:.2f}cqw {mb:.2f}cqw {ml:.2f}cqw"
+                    anchor = str(tf.vertical_anchor or "")
+                    if "MIDDLE" in anchor or "BOTTOM" in anchor:
+                        anchor_css = ("display:flex;flex-direction:column;justify-content:"
+                                      + ("center" if "MIDDLE" in anchor else "flex-end") + ";")
+                except Exception:
+                    pad_css = "0.5cqw 0.75cqw"
             overflow = "visible" if (bg_hex == "transparent" and border_css == "none") else "hidden"
             shape_divs.append(
                 f'<div class="gs-shape" style="position:absolute;left:{l_pct}%;top:{t_pct}%;width:{w_pct}%;height:{h_pct}%;'
-                f'background:{bg_hex};border:{border_css};border-radius:{radius_css};padding:{pad_css};'
+                f'background:{bg_hex};border:{border_css};border-radius:{radius_css};padding:{pad_css};{anchor_css}'
                 f'box-sizing:border-box;overflow:{overflow};z-index:{z};">'
                 f'{"".join(paras_html)}</div>'
             )

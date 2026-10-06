@@ -243,11 +243,26 @@ class TemplateInPlaceTest(OfflineTestCase):
         self.assertEqual([s.text_frame.text for s in rows], ["Use one", "Use two", "Use three"])
         self.assertEqual((rows[0].text_frame.paragraphs[0].runs[0].font.name, rows[0].text_frame.paragraphs[0].runs[0].font.size.pt),
                          ("DM Sans", 12))
-        self.assertEqual(round(rows[0].top / 914400, 2), 3.03)
+        self.assertEqual([round(r.top / 914400, 2) for r in rows], [3.03, 3.44, 3.86])  # one-liners: template pitch
         for slide in prs.slides:
             for s in slide.shapes:
                 if s.has_text_frame:
                     self.assertNotIn("[", s.text_frame.text)  # no "[HEADLINE]"-style placeholders left
+
+    def test_wrapped_criteria_open_the_row_pitch(self):
+        long = "When the catalogue needs structured size and fit answers at scale across many regions and languages"
+        bom = {"status": "done", "headline": "H", "objective": "O",
+               "design_goals": [{"title": f"G{i}", "text": "T"} for i in range(3)], "considerations": {},
+               "when_to_use": [long, "Short", "Short"], "when_to_avoid": ["Short", "Short", "Short"]}
+        path = dg.build_usecase_deck(os.path.join(self.tmp, "w.pptx"), customer="Acme", ask="a", summary="s",
+                                     stages=STAGES, rubric=[], attempts=[], files=[], whats_new=[], mode="Showcase",
+                                     deliverables=[], score=90.0, final_status="PASSED", bom=bom, template_path=TEMPLATE)
+        app = pptx.Presentation(path).slides[3]
+        by_id = {s.shape_id: s for s in app.shapes}
+        self.assertEqual([round(by_id[i].top / 914400, 2) for i in dg.ID_USES], list(dg.WRAP_TOPS))
+        self.assertEqual([round(by_id[i].top / 914400, 2) for i in dg.ID_USE_ICONS],
+                         [round(t + dg.MARK_DY, 2) for t in dg.WRAP_TOPS])  # the pins follow their rows
+        self.assertEqual([round(by_id[i].top / 914400, 2) for i in dg.ID_AVOIDS], [2.81, 3.22, 3.9])  # untouched column
 
 
 if __name__ == "__main__":

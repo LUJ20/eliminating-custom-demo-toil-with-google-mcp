@@ -75,7 +75,7 @@ ID_ARCH_TITLE, ID_ARCH_SUMMARY, ID_ARCH_GOALS, ID_ARCH_DIAGRAM = 549, 550, (551,
 ID_CONS_TITLE, ID_CONS_SUB, ID_CONS_TABLE = 560, 561, 562
 ID_APP_TITLE, ID_USE_HEAD, ID_AVOID_HEAD = 568, 571, 572
 ID_USES, ID_AVOIDS = (574, 575, 576), (578, 579, 580)
-ID_AVOID_ICONS, ID_AVOID_MARK = (584, 585, 586), 577
+ID_USE_ICONS, ID_AVOID_ICONS, ID_AVOID_MARK = (581, 582, 583), (584, 585, 586), 577
 ID_EX_PERSON, ID_EX_GEMINI = 685, 691  # the example diagram's user icon and Gemini sparkle
 # Geometry (inches) of the template's shapes: for the blank fallback, and the one box the template mode resizes.
 G_COVER_TITLE = (0.67, 0.93, 8.45, 4.95)
@@ -89,6 +89,9 @@ G_CONS_TABLE = (0.80, 1.63, 11.81, 3.28)
 G_HEAD_USE, G_HEAD_AVOID = (1.59, 2.03, 4.85, 0.24), (7.43, 2.03, 4.85, 0.24)
 G_ROW_TOPS, G_ROW_H, G_ROW_W = (3.03, 3.44, 3.86), 0.40, 4.60
 G_USE_LEFT, G_AVOID_LEFT = 1.59, 7.43
+# The template's criteria rows are one line each, 0.41 in apart. A criterion longer than ONE_LINE characters wraps
+# to a second 12 pt line, so that column's rows (and their marks) are re-spaced to WRAP_TOPS inside the panel.
+ONE_LINE, WRAP_TOPS, MARK_DY = 55, (3.03, 3.55, 4.07), 0.03
 
 
 class Line(NamedTuple):
@@ -272,6 +275,7 @@ class Skeleton:
         self.goals: list = []
         self.uses: list = []
         self.avoids: list = []
+        self.use_icons: list = []
         self.avoid_icons: list = []
         self.diagram = G_DIAGRAM
         self.pics: Dict[str, bytes] = {}  # pictures borrowed from the template's example diagram
@@ -296,6 +300,7 @@ class Skeleton:
         sk.app_title = _by_id(sk.app, ID_APP_TITLE)
         sk.use_head, sk.avoid_head = _by_id(sk.app, ID_USE_HEAD), _by_id(sk.app, ID_AVOID_HEAD)
         sk.uses, sk.avoids = [_by_id(sk.app, i) for i in ID_USES], [_by_id(sk.app, i) for i in ID_AVOIDS]
+        sk.use_icons = [_by_id(sk.app, i) for i in ID_USE_ICONS]
         sk.avoid_icons = [_by_id(sk.app, i) for i in ID_AVOID_ICONS]
         example = prs.slides[T_EXAMPLE]
         for key, sid in (("person", ID_EX_PERSON), ("gemini", ID_EX_GEMINI)):
@@ -605,9 +610,15 @@ def _design_considerations(sk: Skeleton, customer: str, rows: List[Tuple[str, st
 
 
 def _applicability(sk: Skeleton, customer: str, uses: List[str], avoids: List[str], use_cases: List[str]) -> None:
-    for shapes, texts in ((sk.uses, uses), (sk.avoids, avoids)):
-        for shape, text in zip(shapes, texts):
+    for shapes, marks, texts in ((sk.uses, sk.use_icons, uses), (sk.avoids, sk.avoid_icons, avoids)):
+        respace = any(len(t) > ONE_LINE for t in texts)  # a wrapped row would touch the next: open the pitch
+        for i, (shape, text) in enumerate(zip(shapes, texts)):
             _write(shape, {0: Para([(text, None)], Line("", 12, BODY, font=FONT_TABLE))})
+            if respace and i < len(WRAP_TOPS):
+                shape.top, shape.height = Inches(WRAP_TOPS[i]), Inches(G_ROW_H)
+                mark = marks[i] if i < len(marks) else None
+                if mark is not None:
+                    mark.top = Inches(WRAP_TOPS[i] + MARK_DY)
     if sk.from_template:  # the template's right-hand bullets are pushpins: use its red cross instead
         blob = _blob(_by_id(sk.app, ID_AVOID_MARK))
         if blob:
