@@ -95,6 +95,7 @@ class Settings:
     well_architected_enabled: bool = True    # review each design against the Well-Architected Framework pillars
     bom_enabled: bool = True                 # write the bill-of-materials narrative, deck and documents (engine/bom.py)
     bom_template_path: str = ""              # the reference architecture template .pptx (engine/bom_template.py)
+    deck_icons_path: str = ""                # folder of Google Cloud product icons for the deck (engine/deck_icons.py)
     output_metrics: bool = True              # measure market-standard metrics on every ready output (engine/modality_eval.py)
     multimodal_embedding_model: str = "multimodalembedding@001"  # image / frame / prompt embeddings for CLIP-style alignment
     regression_on_upgrade: bool = True       # re-build the reference use cases after a model promotion; roll back on a regression
@@ -299,6 +300,7 @@ def get_settings() -> Settings:
         well_architected_enabled=_env_flag("WELL_ARCHITECTED_REVIEW", True),
         bom_enabled=_env_flag("BOM_ASSETS", True),
         bom_template_path=os.environ.get("BOM_TEMPLATE_PATH", "").strip(),
+        deck_icons_path=os.environ.get("DECK_ICONS_PATH", "").strip(),
         output_metrics=_env_flag("OUTPUT_METRICS", True),
         multimodal_embedding_model=(os.environ.get("MULTIMODAL_EMBEDDING_MODEL", "").strip()
                                     or Settings.multimodal_embedding_model),

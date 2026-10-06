@@ -88,7 +88,8 @@ class OfflineTestCase(unittest.TestCase):
                                  gcloud_account="jane.tester@corp.test", cache_dir=os.path.join(self.tmp, "cache"),
                                  output_dir=os.path.join(self.tmp, "out"), acceptance_enabled=False,
                                  well_architected_enabled=False, output_metrics=False, bom_enabled=False,
-                                 bom_template_path=os.path.join(self.tmp, "no-template.pptx"))  # no bucket fetch
+                                 bom_template_path=os.path.join(self.tmp, "no-template.pptx"),  # no bucket fetch
+                                 deck_icons_path=os.path.join(self.tmp, "no-icons"))
         for target, effect in (("engine.config._gcloud", self._blocked),
                                ("requests.sessions.Session.request", self._blocked),
                                ("time.sleep", lambda *_: None)):

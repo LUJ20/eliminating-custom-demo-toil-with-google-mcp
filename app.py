@@ -866,24 +866,27 @@ def slides_hint(settings: Settings) -> str:
 
 
 @st.cache_data(show_spinner=False)
-def deck_template_tag(path: str, signature: tuple) -> str:
-    """deck_generator.deck_template for the deck file at `path`, read once per (mtime, size): the app asks on
-    every rerun and opening a .pptx is not free."""
-    return deck_generator.deck_template(path)
+def deck_build_info(path: str, signature: tuple) -> dict:
+    """deck_generator.deck_info for the deck file at `path`, read once per (mtime, size): the app asks on every
+    rerun and opening a .pptx is not free."""
+    return deck_generator.deck_info(path)
 
 
 def deck_caption(deck_path: str) -> str:
-    """What the deck is, and what to do when this server draws it on the blank fallback instead of the template."""
-    text = ("Four slides on the Google Cloud reference architecture template (cover, architecture, design "
-            "considerations, applicability).")
+    """What the deck is, and what to do when this server drew it without the template or without the product
+    icons (both live in the studio bucket; a server fetches them once)."""
+    text = ("Four slides on the Google Cloud reference architecture template (cover, architecture with the product "
+            "icons, design considerations, applicability).")
     try:
         st_ = os.stat(deck_path)
-        tag = deck_template_tag(deck_path, (st_.st_mtime_ns, st_.st_size))
+        info = deck_build_info(deck_path, (st_.st_mtime_ns, st_.st_size))
     except OSError:
-        tag = ""
-    if tag == deck_generator.BLANK_TAG:
+        info = {}
+    if info.get("template") == deck_generator.BLANK_TAG:
         text += (" Template not installed on this server: run "
                  "`python -m engine.bom_template --fetch \"<slides url>\" --push`")
+    if info.get("icons") == deck_generator.NO_ICONS_TAG:
+        text += " Product icons not installed on this server: run `python -m engine.deck_icons --install <folder> --push`"
     return text
 
 
