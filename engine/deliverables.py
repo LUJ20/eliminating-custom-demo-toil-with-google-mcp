@@ -8,6 +8,9 @@ fallback models). Images come first, so a video can start from an image (one ava
 Clip checker: when settings.media_qa is on, a reasoning-tier model watches or listens to every generated file and
 reads every generated text (engine/media_qa.py). A failed check regenerates the asset with the findings as a hint,
 then checks again; the best-scoring result is kept, so the UI can warn. A checker outage never fails an asset.
+A clip or image the checker found off-brief (it shows something other than what the brief asks for, typically the
+story's hero instead of the product) is not regenerated from the same prompt: the director writes the prompt again
+with the finding, then it is made again.
 A chat deliverable's file is the assistant's first reply: the first turn (the director's system instruction with
 its Context section, the first user message) is played at build time, the transcript is checked, and a failed
 check plays it again with the findings, like any other output. redirect() has the director write the setup of a
@@ -15,6 +18,12 @@ project's chats again and replays them (used for chats directed before the assis
 deliverable plays a story scene, a soft "plays_scene" check
 reports outputs that drift off the scene without failing them. quality_summary() / quality_row() roll the
 verdicts up into one scorecard row.
+
+Video length: the planner states a video's "seconds" (from the title or brief, snapped to an even 4-32 s). Veo
+films one shot of 4, 6 or 8 s, so a longer video is filmed as consecutive shots (engine/manifest.shot_lengths),
+the director writing one prompt and script per shot; every shot starts from the last frame of the one before
+(image-to-video) so the story is continuous, and ffmpeg joins them into one file (_film). The clip's real length is
+read from the file (length_s) and a soft "length" check reports a clip shorter or longer than planned.
 
 Data outputs: a "structured" result or an "agent_trace" run is generated as JSON on a text tier (JSON mode),
 validated strictly by manifest.parse_output() (a broken answer is an OutputError, so the Troubleshooter re-prompts
@@ -60,7 +69,8 @@ STATUS_FILE = "status.json"
 FOLDER = "deliverables"
 SPEC_KEYS = ("kind", "title", "brief", "tier", "model", "start_from")
 STORY_KEYS = ("beat", "scene")  # hashed only when set, so builds made before stories keep their clips
-CARRY_KEYS = ("prompt", "script", "file", "mime", "model", "seconds", "note", "qa")
+LENGTH_KEYS = ("seconds", "input_of")  # likewise: a video length other than the default, an input example's target
+CARRY_KEYS = ("prompt", "script", "shots", "file", "mime", "model", "seconds", "length_s", "note", "qa")
 QUALITY_METRIC = "Demo output quality"
 MAX_QUALITY_LABELS = 5  # labels listed per problem in the scorecard notes; the rest are counted
 
@@ -133,9 +143,10 @@ def quality_summary(state: Optional[dict]) -> dict:
     -> {total: ready or failed assets, checked: assets with a pass/fail verdict, passed: verdict pass,
         warned: ['Title / Variant' with verdict fail], failed: [labels that could not be generated],
         pending: assets not finished (pending, running, checking), skipped: finished assets not checked,
-        off_scene: [labels whose soft story-scene check failed]}"""
+        off_scene: [labels whose soft story-scene check failed],
+        wrong_length: [labels of videos that do not run the planned length (soft length check failed)]}"""
     out = {"total": 0, "checked": 0, "passed": 0, "warned": [], "failed": [], "pending": 0, "skipped": 0,
-           "off_scene": []}
+           "off_scene": [], "wrong_length": []}
     for d in (state or {}).get("deliverables") or []:
         if not isinstance(d, dict):
             continue
@@ -165,6 +176,8 @@ def quality_summary(state: Optional[dict]) -> dict:
                 out["skipped"] += 1
             if media_qa.off_scene(qa):
                 out["off_scene"].append(label)
+            if media_qa.wrong_length(qa):
+                out["wrong_length"].append(label)
     return out
 
 
@@ -190,6 +203,8 @@ def quality_row(state: Optional[dict]) -> Optional[dict]:
         notes.append(f"failed a critical check: {_labels(q['warned'])}")
     if q["off_scene"]:
         notes.append(f"off-scene: {_labels(q['off_scene'])}")
+    if q["wrong_length"]:
+        notes.append(f"not the planned length: {_labels(q['wrong_length'])}")
     if q["skipped"]:
         notes.append(f"{q['skipped']} not checked")
     if q["pending"]:
@@ -218,6 +233,10 @@ def _variant_key(v: dict) -> dict:
 def _base_spec(d: dict, by_id: Dict[str, dict]) -> dict:
     base = {k: str(d.get(k) or "") for k in SPEC_KEYS}
     base.update({k: str(d[k]) for k in STORY_KEYS if d.get(k)})
+    if d.get("kind") == "video" and d.get("seconds") and int(d["seconds"]) != manifest.DEFAULT_VIDEO_S:
+        base["seconds"] = str(int(d["seconds"]))
+    if d.get("input_of"):
+        base["input_of"] = str(d["input_of"])
     src = by_id.get(d.get("start_from") or "") if d.get("kind") == "video" else None
     if src:  # a video starts from the first variant of its image: that image's spec is part of the video's
         base["start_image"] = _digest({**{k: str(src.get(k) or "") for k in SPEC_KEYS},
@@ -227,8 +246,9 @@ def _base_spec(d: dict, by_id: Dict[str, dict]) -> dict:
 
 def spec_hashes(deliverables: List[dict]) -> Dict[str, dict]:
     """{deliverable id: {"spec_hash": ..., "variants": {label: variant hash}}} for a validated manifest. The
-    deliverable hash covers kind, title, brief, tier, model, start_from (and that image's spec) and every
-    variant; a variant hash covers the same fields for that one variant."""
+    deliverable hash covers kind, title, brief, tier, model, start_from (and that image's spec), a video length
+    other than the default, an input example's target and every variant; a variant hash covers the same fields
+    for that one variant."""
     by_id = {d.get("id"): d for d in deliverables}
     out: Dict[str, dict] = {}
     for d in deliverables:
@@ -258,11 +278,13 @@ def _initial_state(build_id: str, customer: str, ask: str, summary: str, deliver
         h = hashes[d.get("id")]
         items.append({**{k: d.get(k, "") for k in ("id", "title", "kind", "tier", "brief", "start_from", "model",
                                                    "location", "status", "beat", "scene")},
+                      "seconds": int(d.get("seconds") or 0), "input_of": d.get("input_of", ""),
                       "spec_hash": h["spec_hash"],
                       "assets": [{"label": v["label"], "language": v.get("language", ""),
                                   "status": "unsupported" if unsupported else "pending", "prompt": "", "script": "",
-                                  "file": "", "mime": "", "model": "", "seconds": 0, "error": "", "note": "",
-                                  "qa": {}, "spec_hash": h["variants"].get(v["label"], ""), "carried_over": False}
+                                  "shots": [], "file": "", "mime": "", "model": "", "seconds": 0, "length_s": 0,
+                                  "error": "", "note": "", "qa": {}, "spec_hash": h["variants"].get(v["label"], ""),
+                                  "carried_over": False}
                                  for v in d.get("variants", [])]})
     return {"build_id": build_id, "job_id": job_id, "state": "queued", "error": "", "started_at": iso(),
             "updated_at": iso(), "customer": customer, "ask": ask, "summary": summary, "story": story or {},
@@ -422,7 +444,8 @@ def redirect(settings: Settings, project_dir: str, kinds: Tuple[str, ...] = ("ch
                 continue
             for a in d["assets"]:
                 if a.get("status") == "ready":
-                    a.update(status="pending", prompt="", script="", error="", note="", qa={}, carried_over=False)
+                    a.update(status="pending", prompt="", script="", shots=[], error="", note="", qa={},
+                             carried_over=False)
                     n += 1
         if not n:
             return 0
@@ -462,6 +485,9 @@ class _Job:
         mcp = McpKnowledgeClient(settings)
         self.resolver = ModelResolver(settings, mcp)
         self.doctor = Troubleshooter(settings, self.resolver, mcp)
+        self._notes: Dict[Tuple[str, str], List[str]] = {}  # (deliverable, label) -> what happened while filming
+        self._filmed: Dict[Tuple[str, str], dict] = {}      # (deliverable, label) -> shots kept across a retry
+        self._lock = threading.Lock()
 
     # -------------------------------------------------------------- state
     def _update(self, change: Callable[[dict], None]) -> dict:
@@ -477,6 +503,16 @@ class _Job:
             write_json(self.path, state)
             return state
 
+    def _live(self) -> bool:
+        """False once a newer build owns the status file (a lock-free read: write_json is atomic). Sets `stop`, so
+        a long film ends between two shots instead of after the last one."""
+        if not self.stop.is_set():
+            state = read_json(self.path, None)
+            if not isinstance(state, dict) or state.get("build_id") != self.build_id or \
+                    str(state.get("job_id") or "") != self.job_id:
+                self.stop.set()
+        return not self.stop.is_set()
+
     def _set_asset(self, did: str, label: str, **fields) -> None:
         def change(state: dict) -> None:
             for d in state["deliverables"]:
@@ -485,6 +521,15 @@ class _Job:
                         if a["label"] == label:
                             a.update(fields)
         self._update(change)
+
+    def _note(self, did: str, label: str, text: str) -> None:
+        """Remember something the viewer should know about an asset being generated (written to its note)."""
+        with self._lock:
+            self._notes.setdefault((did, label), []).append(text)
+
+    def _take_notes(self, did: str, label: str) -> str:
+        with self._lock:
+            return _join(*self._notes.pop((did, label), []))
 
     # -------------------------------------------------------------- run
     def run(self) -> None:
@@ -529,8 +574,9 @@ class _Job:
         return any(a["status"] == "pending" and not a["prompt"] for d in state["deliverables"] for a in d["assets"])
 
     def _direct(self, state: dict) -> bool:
-        """Media director: a prompt and a script for every pending asset. -> False if it failed. When some variants
-        of a deliverable were carried over, the director sees one of them so the new ones match it."""
+        """Media director: a prompt and a script for every pending asset (per shot for a multi-shot video). ->
+        False if it failed. When some variants of a deliverable were carried over, the director sees one of them
+        so the new ones match it."""
         todo = []
         for d in state["deliverables"]:
             pending = [a for a in d["assets"] if a["status"] == "pending" and not a["prompt"]]
@@ -539,9 +585,7 @@ class _Job:
             ref = next((a for a in d["assets"] if a["prompt"]), None)
             brief = d["brief"] + (f"\nMatch the existing variant '{ref['label']}' exactly in character, voice and "
                                   f"setting. Its prompt: {ref['prompt'][:800]}" if ref else "")
-            todo.append({k: d[k] for k in ("id", "title", "kind", "start_from")} | {"brief": brief} |
-                        {"scene": d.get("scene", "")} |
-                        {"variants": [{"label": a["label"], "language": a["language"]} for a in pending]})
+            todo.append(self._direction_spec(d, brief, pending))
         try:
             plan, _ = self.doctor.run("Media director", ROLES["director"], lambda m, loc, hint: brain.direct_media(
                 self.s, m, loc, hint, customer=state["customer"], ask=state["ask"], summary=state["summary"],
@@ -563,10 +607,39 @@ class _Job:
                 for a in d["assets"]:
                     got = plan.get((d["id"], a["label"]))
                     if got and not a["prompt"]:
-                        a.update(prompt=got["prompt"], script=got["script"])
+                        a.update(prompt=got["prompt"], script=got["script"], shots=got.get("shots") or [])
             s["state"] = "generating"
         self._update(apply)
         return True
+
+    @staticmethod
+    def _direction_spec(d: dict, brief: str, assets: List[dict]) -> dict:
+        """One deliverable as the director sees it (its video length decides how many shots it writes)."""
+        return ({k: d[k] for k in ("id", "title", "kind", "start_from")} | {"brief": brief}
+                | {"scene": d.get("scene", ""), "seconds": int(d.get("seconds") or 0)}
+                | {"variants": [{"label": a["label"], "language": a["language"]} for a in assets]})
+
+    def _redirect_one(self, state: dict, d: dict, a: dict, finding: str) -> Optional[dict]:
+        """The director writes one asset's prompt, script and shots again after a reviewer found the clip
+        off-brief (wrong subject or setting). -> the new direction, or None when the director failed."""
+        brief = (f"{d['brief']}\nA reviewer rejected the clip made from the previous prompt. Previous prompt: "
+                 f"{a['prompt'][:600]}. Reviewer: {finding[:560]}. Write a new prompt that films exactly what this "
+                 "brief asks for; the story scene is only the moment, never the subject.")
+        todo = [self._direction_spec(d, brief, [a])]
+        try:
+            plan, _ = self.doctor.run("Media director", ROLES["director"], lambda m, loc, hint: brain.direct_media(
+                self.s, m, loc, hint, customer=state["customer"], ask=state["ask"], summary=state["summary"],
+                deliverables=todo, story=state.get("story")))
+        except StepFailed as e:
+            logger.warning("re-direct of %s/%s failed: %s", d["id"], a["label"], redact(str(e))[:200])
+            return None
+        got = plan.get((d["id"], a["label"]))
+        if not got:
+            return None
+        fields = {"prompt": got["prompt"], "script": got["script"], "shots": got.get("shots") or []}
+        self._set_asset(d["id"], a["label"], **fields)
+        a.update(fields)
+        return fields
 
     def _generate(self) -> None:
         state = self._update(lambda s: None)
@@ -591,7 +664,9 @@ class _Job:
         """Generate one asset, then (clip checker on) check it; on a failed check regenerate with the findings as
         a hint and check again. States: running -> checking -> [running -> checking -> ] ready. Works for media
         files, text deliverables and data outputs alike (a text or data output is regenerated with the findings
-        in its prompt)."""
+        in its prompt). A clip or image the reviewer found off-brief (matches_prompt failed) is not regenerated
+        from the same prompt: the director writes the prompt again with the finding first (_redirect_one). A
+        video's real length is read from the file (length_s) and compared with the plan (soft "length" check)."""
         if self.stop.is_set():
             return
         did, label = job
@@ -605,38 +680,62 @@ class _Job:
         try:
             data, mime, model = self._produce(d, a, first_frame, "")
         except StepFailed as e:
-            self._set_asset(did, label, status="failed", error=redact(str(e))[:400], note=note)
+            self._set_asset(did, label, status="failed", error=redact(str(e))[:400],
+                            note=_join(note, self._take_notes(did, label)))
             return
+        note = _join(note, self._take_notes(did, label))
+        length_s = self._length(d, data)
         check = bool(self.s.media_qa) and media_qa.checkable(d["kind"])
         name = self._save(did, label, data, mime, status="checking" if check else "ready", model=model,
-                          seconds=round(time.monotonic() - t0, 1), note=note)
+                          seconds=round(time.monotonic() - t0, 1), length_s=length_s, note=note)
         self._discard(a.get("file", ""), name)
         if not check:
             return
-        qa = self._check(dq, a, data, mime, first_frame, model=model, text=self._transcript(d, a, data))
-        best = {"file": name, "model": model, "mime": mime, "qa": qa}  # the best-scoring clip checked so far
+        qa = self._checked(dq, a, data, mime, first_frame, model, length_s)
+        best = {"file": name, "model": model, "mime": mime, "qa": qa, "length_s": length_s}  # best-scoring so far
         first_summary, tried = qa["summary"], 0
         rounds = max(0, int(self.s.media_retries))
         while best["qa"]["verdict"] == "fail" and tried < rounds and not self.stop.is_set():
             tried += 1
-            self._set_asset(did, label, status="running", qa=best["qa"], note=_join(
-                note, f"The checker found problems; regenerating with its findings ({tried} of {rounds})."))
+            hint = media_qa.failed_hint(best["qa"])
+            if d["kind"] in ("video", "image") and media_qa.off_brief(best["qa"]) and \
+                    self._redirect_one(state, d, a, media_qa.findings(best["qa"])):
+                note = _join(note, f"The checker found the {d['kind']} off-brief; the director rewrote the prompt "
+                                   f"and it was made again ({tried} of {rounds}).")
+                hint = ""  # the new prompt answers the finding; the old one must not travel with it
+            else:
+                note = _join(note, f"The checker found problems; regenerating with its findings ({tried} of {rounds}).")
+            self._set_asset(did, label, status="running", qa=best["qa"], note=note)
             try:
-                data2, mime2, model2 = self._produce(d, a, first_frame, media_qa.failed_hint(best["qa"]))
+                data2, mime2, model2 = self._produce(d, a, first_frame, hint)
             except StepFailed as e:
-                note = _join(note, f"Regenerating after the failed check did not work: {redact(str(e))[:200]}")
+                note = _join(note, self._take_notes(did, label),
+                             f"Regenerating after the failed check did not work: {redact(str(e))[:200]}")
                 break
+            note = _join(note, self._take_notes(did, label))
+            length2 = self._length(d, data2)
             name2 = self._save(did, label, data2, mime2, status="checking", model=model2,
-                               seconds=round(time.monotonic() - t0, 1), note=note)
-            qa2 = self._check(dq, a, data2, mime2, first_frame, model=model2, text=self._transcript(d, a, data2))
+                               seconds=round(time.monotonic() - t0, 1), length_s=length2, note=note)
+            qa2 = self._checked(dq, a, data2, mime2, first_frame, model2, length2)
             if qa2["verdict"] != "fail" or qa2.get("score", 0) >= best["qa"].get("score", 0):
                 self._discard(best["file"], name2)
-                best = {"file": name2, "model": model2, "mime": mime2, "qa": qa2}
+                best = {"file": name2, "model": model2, "mime": mime2, "qa": qa2, "length_s": length2}
             else:  # the new clip scored lower: keep the earlier one
                 self._discard(name2, best["file"])
         qa = dict(best["qa"], regenerated=True, first_summary=first_summary) if tried else best["qa"]
         self._set_asset(did, label, status="ready", qa=qa, note=note, file=best["file"], model=best["model"],
-                        mime=best["mime"])
+                        mime=best["mime"], length_s=best["length_s"])
+
+    @staticmethod
+    def _length(d: dict, data: bytes) -> float:
+        """A video's real length in seconds, read from the file (0 for the other kinds or an unreadable file)."""
+        return media.mp4_duration_s(data) if d["kind"] == "video" else 0
+
+    def _checked(self, dq: dict, a: dict, data: bytes, mime: str, first_frame: Optional[media.Media], model: str,
+                 length_s: float) -> dict:
+        """The reviewer's result, with the programmatic length check added for a video."""
+        qa = self._check(dq, a, data, mime, first_frame, model=model, text=self._transcript(dq, a, data))
+        return media_qa.with_length(qa, dq.get("seconds"), length_s) if dq["kind"] == "video" else qa
 
     def _produce(self, d: dict, a: dict, first_frame: Optional[media.Media], qa_hint: str) -> Tuple[bytes, str, str]:
         """One generation through the Troubleshooter. -> (data, mime, model served)."""
@@ -706,7 +805,7 @@ class _Job:
         if kind == "image":
             return media.image(self.s, model, location, prompt)
         if kind == "video":
-            return media.video(self.s, model, location, prompt, first_frame=first_frame)
+            return self._film(d, a, model, location, retry_note, first_frame)
         if kind == "speech":
             return media.speech(self.s, model, location, a["script"] or a["prompt"],
                                 style=a["prompt"] if a["script"] else "")
@@ -722,6 +821,60 @@ class _Job:
         if not text.strip():
             raise OutputError(f"{model} returned empty text")
         return text.strip().encode("utf-8"), "text/markdown"
+
+    @staticmethod
+    def _shots(d: dict, a: dict) -> List[dict]:
+        """The shots of a video asset: the director's (prompt, script, seconds per shot), or one shot of the
+        asset's prompt for an asset directed before shots existed (its length is then the model's default)."""
+        shots = [s for s in (a.get("shots") or []) if isinstance(s, dict) and str(s.get("prompt") or "").strip()]
+        if shots:
+            return [{"prompt": str(s["prompt"]), "seconds": int(s.get("seconds") or 0)} for s in shots]
+        return [{"prompt": a["prompt"], "seconds": 0}]
+
+    def _film(self, d: dict, a: dict, model: str, location: str, retry_note: str,
+              first_frame: Optional[media.Media]) -> media.Media:
+        """A video as consecutive Veo shots (per the director's shots), each asked for its length and started
+        from the last frame of the one before, joined into one file with ffmpeg. One shot is a single Veo call.
+        Without ffmpeg only the first shot is filmed (the note says so). Shots already filmed by this model from
+        the same prompts are reused when the Troubleshooter re-prompts after a later shot failed; the cache is
+        dropped once the film is complete, so a regeneration after a failed check films everything anew."""
+        key, shots = (d["id"], a["label"]), self._shots(d, a)
+        if len(shots) > 1 and not media.has_ffmpeg():
+            self._note(*key, f"Only shot 1 of {len(shots)} ({shots[0]['seconds'] or '?'} s of {d.get('seconds')} s) "
+                             "was filmed: ffmpeg is not installed on this server, so shots cannot be joined.")
+            shots = shots[:1]
+        with self._lock:
+            kept = self._filmed.get(key) or {}
+            parts: List[bytes] = list(kept.get("parts", [])) if kept.get("model") == model else []
+            prompts: List[str] = list(kept.get("prompts", [])) if kept.get("model") == model else []
+        frame = first_frame
+        for i, shot in enumerate(shots):
+            if i and not self._live():
+                break  # the project was rebuilt: the next status update ends this job
+            reused = i < len(parts) and prompts[i] == shot["prompt"]
+            if not reused:
+                del parts[i:], prompts[i:]
+                clip, _ = media.video(self.s, model, location, shot["prompt"] + retry_note, first_frame=frame,
+                                      duration_s=shot["seconds"] or None)
+                parts.append(clip)
+                prompts.append(shot["prompt"])
+                with self._lock:
+                    self._filmed[key] = {"model": model, "parts": list(parts), "prompts": list(prompts)}
+            if i + 1 < len(shots):
+                try:
+                    frame = media.last_frame(parts[i])
+                except media.StitchError as e:
+                    self._note(*key, f"Shot {i + 2} could not start from the end of shot {i + 1} ({e}).")
+                    frame = first_frame
+        with self._lock:
+            self._filmed.pop(key, None)
+        if len(parts) == 1:
+            return parts[0], "video/mp4"
+        try:
+            return media.concat_videos(parts), "video/mp4"
+        except media.StitchError as e:
+            self._note(*key, f"Only shot 1 of {len(shots)} is shown: {e}.")
+            return parts[0], "video/mp4"
 
     def _first_frame(self, state: dict, d: dict) -> Tuple[Optional[media.Media], str]:
         """The image a video starts from (the first ready variant of its start_from deliverable)."""

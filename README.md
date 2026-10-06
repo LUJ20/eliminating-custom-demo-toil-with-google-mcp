@@ -15,7 +15,9 @@ scanned forms"*. The studio returns:
 - **Demo outputs**: videos, images, voice and music from Google's media models, or structured results, agent
   traces and chat demos (opened on a played, checked first reply, with charts) for non-media use cases; when the
   system reads documents or photos (claims intake, invoices, damage photos), a synthetic example of that input is
-  shown before its extracted result, with the same names, numbers and dates
+  shown before its extracted result, with the same names, numbers and dates. A video is as long as the ask says
+  (4 to 32 seconds: a 16-second ad is two Veo shots, each continuing the last frame of the one before, joined into
+  one file) and films what the brief names (the product in an ad, a presenter only when the ask wants one)
 - **Story**: a hero, a challenge and a payoff, plus a presenter script
 - **Deck**: six editable slides (story, the same architecture flow as the app's diagram with the demo outputs
   attached, deliverables, scorecard, Well-Architected review, package) with the talk track in the speaker notes;
@@ -25,8 +27,6 @@ scanned forms"*. The studio returns:
   Framework, with one finding and one recommendation per pillar, each citing the Framework page it comes from; the
   verdict is a design-review readiness gate ("Ready for design review" when every pillar scores 3 or more)
 - **Chat**: ask questions or request changes ("add Korean", "shorten the video"), answered with doc citations
-
-Naming: Google renamed Vertex AI to **Gemini Enterprise Agent Platform** ("Agent Platform"), Vertex AI Search to Agent Search and Agent Engine to Agent Runtime (release notes, mid-2026). The studio uses the current names everywhere, including in saved builds; APIs, roles and endpoints (`aiplatform.googleapis.com`) are unchanged.
 
 Example presets cover enterprise search with citations, document processing, an analytics agent, a voice
 concierge and generative media. One sidebar picker, **Open a demo**, lists the samples and then your saved builds.
@@ -134,7 +134,9 @@ This is a demo deployment, not a production service.
 - One Cloud Run instance stays on (about $4 a day at list price), plus model usage for each build.
 - Built projects are backed up to your bucket (`_projects/`) every minute and restored when the app starts, so
   they survive redeploys and restarts. To bring local projects along: `python -m engine.project_sync --push`.
-- One instance serves a small team. A build takes 3 to 10 minutes; the pre-built samples open at once.
+- One instance serves a small team. A build takes 3 to 10 minutes; the pre-built samples open at once. A video
+  costs one Veo call per 8 seconds (a 16-second ad is two calls, filmed one after the other, one to three minutes
+  each); the container ships ffmpeg to join the shots, a laptop needs it installed or films the first shot only.
 - Generated code is checked by evals but never executed by the studio. Run it in your own project before you
   show it live.
 
@@ -287,7 +289,7 @@ Gemini+MCP/
 1. **Grounding**: Queries `McpKnowledgeClient` (`search_documents` and `get_documents`) for official Google Cloud docs matching the customer use case (in parallel with the model catalog read).
 2. **Model Catalog**: Fetches the active verified model per capability tier from `ModelResolver`.
 3. **Architecture & Story Planning**: Uses the `reasoning` tier (`brain.py`) to design pipeline stages, story scenes (hero, challenge, payoff), and a deliverables manifest (`manifest.py`).
-4. **Parallel Deliverable Generation**: As soon as the first valid plan is produced, `deliverables.py` launches background generation (up to 6 outputs in parallel) across video, image, speech, music, structured JSON/tables, agent traces, text, and chat demos. A chat demo is made like any other output: the director writes its system instruction with a **Context** section (the scene's facts and the hero's records) and a chart rule, the opener is played once against the real model, the first reply is saved (`.md`) and checked on the transcript, and a rejected reply is played again with the reviewer's findings appended to the instruction. The UI opens the chat with that first exchange in place, draws any fenced `chart` CSV block as a line chart (`charts.py`), and can play the first reply again.
+4. **Parallel Deliverable Generation**: As soon as the first valid plan is produced, `deliverables.py` launches background generation (up to 6 outputs in parallel) across video, image, speech, music, structured JSON/tables, agent traces, text, and chat demos. A chat demo is made like any other output: the director writes its system instruction with a **Context** section (the scene's facts and the hero's records) and a chart rule, the opener is played once against the real model, the first reply is saved (`.md`) and checked on the transcript, and a rejected reply is played again with the reviewer's findings appended to the instruction. The UI opens the chat with that first exchange in place, draws any fenced `chart` CSV block as a line chart (`charts.py`), and can play the first reply again. **Video length and subject**: the planner states each video's `seconds` (the length the ask gives, snapped to an even 4–32; a length written in the title or brief must be that number, or the plan is sent back). Veo films one shot of 4, 6 or 8 s, so `manifest.shot_lengths` splits a longer video into shots (16 s → 8 + 8, 20 s → 8 + 6 + 6) and the media director writes one prompt and script per shot, the brief deciding what is on screen (an ad films the product with a voice-over; a presenter or avatar only when the ask wants one). `_film` asks Veo for each shot's `durationSeconds`, starts every shot from the last frame of the one before (image-to-video), and joins the shots with ffmpeg into one file; the clip's real length is read from the MP4 and shown under the clip. **Visual inputs**: when the system reads documents or photos, the planner lists them in `visual_inputs` and adds one image deliverable per input with `input_of` set to the deliverable that reads it, listed before it; `manifest.py` rejects a plan that declares an input without its example or lists it after its result.
 5. **Acceptance Tests Start Early**: At that same first plan, `acceptance.py` plans 3–6 use-case-specific tests and runs them (6 in parallel) in the background against the design's models, overlapping code generation and judging instead of running after them. A test run is keyed by the design (stages, services, features, story), so a retry that keeps the design reuses it.
 6. **Well-Architected Review Starts Early**: Also at that first plan, `well_architected.py` retrieves the Framework's five pillar pages (and the AI/ML perspective) through MCP, cached per process for a day, and asks the `reasoning` tier to score the design 1–5 per pillar with a finding, a recommendation and the source page for each; the answer is validated by code (every pillar, scores in range, sources that exist) and re-asked on failure. Keyed by the design like the acceptance tests, advisory, and shown as "Not reviewed" when MCP or the model is unavailable.
 7. **Code Generation & Packaging**: Uses the `fast` tier to generate `pipeline.py` (with `--dry-run` support) while citations are attached in parallel, resolves dependencies via `DependencyResolver` (in parallel with the judge), and scans all files for secrets/PII with `PIISanitizer`.
@@ -307,12 +309,13 @@ Typical wall time: about 3 minutes for a data/agent use case, 8–10 minutes whe
 
 #### 3.3 Self-Upgrading Model Resolver (`engine/model_resolver.py`)
 1. **Discover**: Scans Google Developer Knowledge MCP documentation for candidate model IDs across 11 tiers (`reasoning`, `fast`, `lite`, `live`, `image`, `image_fast`, `video`, `video_fast`, `music`, `speech`, `embedding`).
-2. **Verify**: Checks availability in Model Garden and runs a live probe call.
-3. **Gate (Golden Set & Canaries)**:
+2. **Lifecycle**: Reads Google's model lifecycle pages through the same MCP server (the Agent Platform *model versions and lifecycle* page first, then the Gemini API *deprecations* page, then release notes; the first page that names a model wins) for each model's retirement date, a "or later" floor, a "no date announced" note and its listed replacement. A model whose firm retirement date is within 180 days [`RETIRE_WITHIN_DAYS`] is not used while its tier has another verified model (a tier is never emptied by this rule); floors and undated models are shown, not excluded. A listed replacement that no tier pattern matches (a new model family, for example a `gemini-omni` successor of a Veo preview) joins the retiring model's tier as a candidate and goes through the same verification and gate, so a rename never strands a tier. Retirement dates appear in the models-in-use caption.
+3. **Verify**: Checks availability in Model Garden and runs a live probe call.
+4. **Gate (Golden Set & Canaries)**:
    - Text tiers run a 9-task role-based golden benchmark (must score $\ge 7/9$, match or beat current champion, and stay within $2\times$ latency).
    - Media and embedding tiers run modality-specific quality canaries.
-4. **Promote, Regression Check & Sample Refresh**: On promotion, triggers `regression.py` across the 4 reference use cases in `evals/reference_cases.json`, then `prebuild.py` rebuilds the sample demos that used the replaced model (hooks run in order, so a rollback happens before any sample is rebuilt).
-5. **Runtime Watch & Rollback**: Tracks a sliding window of the last 8 calls per model (ignoring environment/credential/HTTP 429 errors via `Troubleshooter`). If model quality or reliability degrades, automatically rolls back to the previous champion and quarantines the failing model for 24 hours.
+5. **Promote, Regression Check & Sample Refresh**: On promotion, triggers `regression.py` across the 4 reference use cases in `evals/reference_cases.json`, then `prebuild.py` rebuilds the sample demos that used the replaced model (hooks run in order, so a rollback happens before any sample is rebuilt). A champion set aside by the lifecycle rule is replaced the same way (the promotion hooks fire with the reason).
+6. **Runtime Watch & Rollback**: Tracks a sliding window of the last 8 calls per model (ignoring environment/credential/HTTP 429 errors via `Troubleshooter`). If model quality or reliability degrades, automatically rolls back to the previous champion and quarantines the failing model for 24 hours.
 
 #### 3.4 Post-Build Chat & Versioning (`engine/build_editor.py`)
 1. **Context Assembly**: Combines up to 8 MCP documentation pages with full build facts (scores, rubric reasons, chosen models, story scenes, deliverables, and QA checks).
@@ -320,6 +323,32 @@ Typical wall time: about 3 minutes for a data/agent use case, 8–10 minutes whe
    - **Question**: Generates a grounded answer and runs a citation verification check (retrying once if a claim is unsupported by the cited doc).
    - **Build Change** (outputs, docs, or code): Takes a snapshot via `versions.py`, applies the requested edits (regenerating only modified deliverables or running `code_editor.py` with full re-judging and diff generation), and runs a change-completion check (`done` / `partly` / `not done`).
    - **Refusal**: Blocks out-of-policy requests (e.g., using unverified models, disabling security checks, exceeding cost caps) with a clear explanation.
+
+#### 3.5 Keeping up with Google: model retirements and product renames
+
+Two things change under a demo studio without anyone touching it: models retire, and products get new names. Both are handled by code, from the official docs, and both are checked on every model refresh (at start and daily) and on every build.
+
+**Model retirement check** (`engine/model_resolver.py`, `engine/config.py`, `app.py`)
+
+| Step | How |
+| :--- | :--- |
+| Source | On every refresh, `discover()` asks the Developer Knowledge MCP server for Google's lifecycle pages and reads them with `get_documents`: the Agent Platform **model versions and lifecycle** page first, then the Gemini API **deprecations** page, then the release notes (`LIFECYCLE_PRIORITY`). `parse_retirements` reads the tables (model, retirement date, replacement) and the prose (one model per sentence, the first date after "retire / shut down / deprecated"); `merge_lifecycle` keeps the first page that names a model, so the Agent Platform page wins when the two pages disagree, and records which page it came from (`retire_source`) |
+| What is recorded | Per model: `retires_on` (a firm date), `retire_floor` ("November 17, 2026 **or later**": a floor, not a date), "no retirement date announced" (known, undated) and the replacement Google lists. Stored in the registry under `lifecycle` and copied onto every tier entry (`ENTRY_KEYS`) |
+| The rule | In `_verify`, a candidate whose **firm** retirement date is within **180 days** [`RETIRE_WITHIN_DAYS`] gets status `retiring` and is treated like a model that is gone (`GONE`), **only while the tier has another verified model**: a tier is never emptied by this rule, so a floor, an undated model, or the last model standing stays in use. `_gate` and `_promote_newest` then replace a retiring champion through the normal gate (golden set or media canary) and fire the promotion hooks with the reason "replaces the champion set aside this refresh", so the regression suite runs and the samples that used the old model are rebuilt |
+| Renamed model families | A listed replacement that no tier's naming pattern matches (for example `gemini-omni-1.1-flash` as the successor of a Veo preview) is added to the retiring model's tier by `_follow_replacements` with `followed=<old model>`, verified and gated like any candidate (`_still_valid` accepts followed entries), so a rename never strands a tier and no pattern has to be edited first |
+| Where it shows | The models-in-use caption under a build reads "(retires 2026-10-20)" or "(retires 2026-11-17 or later)" (`ModelResolver.retirement`); the registry's `rows()` carry a "Retires" column for the CLI; `_lifecycle_notes` logs every model in use with a date. Production mode: a GA champion that is retiring is set aside the same way, so a build moves to Google's listed replacement |
+
+**Product rename check** (`engine/common.py`, `engine/brain.py`, `engine/build_editor.py`, `engine/deck_generator.py`)
+
+| Step | How |
+| :--- | :--- |
+| Source | The planner is grounded in the current official docs through MCP on every build, so new names arrive with the docs. The rename table `CURRENT_NAMES` in `engine/common.py` is kept from the Agent Platform release notes (mid-2026: Vertex AI → Gemini Enterprise Agent Platform, "Agent Platform" for short; Vertex AI Search → Agent Search; Agent Engine → Agent Runtime; Vertex AI Studio → Agent Studio; Agent Builder; Model Garden unchanged), longest names first so "Vertex AI Search" is never cut to "Agent Platform Search" |
+| At plan time | The planner prompt says to use the names the docs use today; `brain.validate_plan` then runs `current_names()` over the summary and every stage field (stage, service, API, description), so a model that still writes the old name cannot put it into a plan. The code-generation prompt names Agent Platform (formerly Vertex AI) with the `google-genai` SDK |
+| Saved builds | `build_editor.load_result` applies `current_names()` to the summary, the stage fields and the doc titles of every build when it is opened, so demos built before a rename show the current names without a rebuild; bumping `DECK_VERSION` (6 did this) redraws saved decks from the stored result in seconds |
+| What is never touched | Technical identifiers: `aiplatform.googleapis.com`, `roles/aiplatform.*`, the SDK's `vertexai=True`, doc URLs under `/vertex-ai/`. The patterns need the space-separated product name, so code and endpoints keep working |
+| Tests | `tests/test_product_names.py` (old → new for every pair, identifiers untouched); `tests/test_model_lifecycle.py` (tables, prose, floors, "no date", page priority, the 180-day rule, the last-model exception, the gate's reason, followed replacements) |
+
+Limits: the rename table is maintained by hand from the release notes (renames are rare and prose-only; parsing them automatically would be guesswork), while retirement dates are read from the docs on every refresh. Neither check needs a redeploy: the lifecycle pages are re-read daily, and a rename edit is one line in `CURRENT_NAMES`.
 
 
 ### 4. Evaluation: every rule, rubric and threshold
@@ -333,7 +362,7 @@ Every build, demo output, chat change and model upgrade is evaluated. Thresholds
 | A build | Build scorecard (up to 3 attempts; a code-only retry keeps a passing design) · acceptance tests, started with the first valid plan and run alongside code generation and judging (6 at a time) · Well-Architected review of the chosen design (advisory) · output checks on every demo output |
 | A sample pre-build (app start, model promotion) | The same evals as a build: the saved samples are real builds |
 | A chat message | Question: citation check. Change: validation → change check (code changes are also re-judged) |
-| Daily model refresh | Promotion canary for new models · drift check on current models |
+| Daily model refresh | Promotion canary for new models · drift check on current models · retirement check against Google's lifecycle pages (M7) |
 | Every model call | Runtime watch (errors, invalid outputs, failed output checks) |
 | After a model upgrade | Regression suite on the reference use cases, then the sample demos are rebuilt on the new models |
 | Before a release | Chat intent set (`scripts/eval_chat_intents.py`) · offline unit tests (`python -m unittest discover -s tests`) |
@@ -380,8 +409,8 @@ The review is advisory: it never changes the build score or triggers a retry. Ju
 
 | Output | Critical checks | Soft checks |
 | :--- | :--- | :--- |
-| Video | language, script, lip-sync, same person, brand safe | on-screen text legible, matches prompt, plays the scene |
-| Image | brand safe, on-screen text legible (a form or chart with garbled text is regenerated) | matches prompt, plays the scene |
+| Video | language, script, lip-sync, same person, brand safe, matches the prompt and brief (the subject the brief names: the product in an ad, not a person talking about it unless asked) | on-screen text legible, plays the scene, length (the clip runs the planned length ± 1.5 s, read from the file by code) |
+| Image | brand safe, on-screen text legible (a form or chart with garbled text is regenerated), matches the prompt and brief | plays the scene |
 | Speech | language, script, brand safe | plays the scene |
 | Music | brand safe | mood, plays the scene |
 | Text | written language, matches the brief, brand safe | plays the scene |
@@ -389,7 +418,7 @@ The review is advisory: it never changes the build score or triggers a retry. Ju
 | Table / JSON result | schema valid, matches the brief, written language, brand safe | plays the scene |
 | Agent trace | schema valid, matches the brief, plausible steps, safe actions, brand safe | plays the scene |
 
-A critical failure regenerates the output with the findings, up to 2 more rounds [`MEDIA_RETRIES`], best kept (a chat is played again with the findings appended to its system instruction). The live **Demo output quality** row = all outputs pass their critical checks; with the sidebar switch **Show output checks** on, each output also shows one collapsed "Checks: n/m passed" line with the reviewer's summary (off by default; a failed check still highlights that output's Regenerate button).
+A critical failure regenerates the output with the findings, up to 2 more rounds [`MEDIA_RETRIES`], best kept (a chat is played again with the findings appended to its system instruction). A clip or image that fails **matches the prompt and brief** is not refilmed from the same prompt: the media director writes the prompt (and each shot's script) again with the previous prompt and the reviewer's finding, then it is made and checked again. The soft **length** check and **plays the scene** never fail an output; they lower its score and are listed in the scorecard notes ("not the planned length", "off-scene"). At plan time, `manifest.py` also checks that every declared visual input has its example image listed before the deliverable that reads it (a plan that breaks this is sent back to the planner). The live **Demo output quality** row = all outputs pass their critical checks; with the sidebar switch **Show output checks** on, each output also shows one collapsed "Checks: n/m passed" line with the reviewer's summary (off by default; a failed check still highlights that output's Regenerate button).
 
 #### 4.6 Chat — is the answer or change right? (`engine/build_editor.py`)
 
@@ -413,6 +442,7 @@ A critical failure regenerates the output with the findings, up to 2 more rounds
 | M4 Daily drift check (text models) | At most 1 golden task lower than at promotion [`DRIFT_TOLERANCE`] |
 | M5 Runtime watch (all models) | Over the last 8 calls: error rate below 50 % and quality 0.6 or better, where failed output checks count as bad quality; credential, network, project-setup and rate-limit (429) errors are ignored [`ROLLBACK_*`] |
 | M6 Regression suite after an upgrade (4 reference use cases: voice/avatar, RAG search, agent + data, document extraction) | No case drops more than 10 points and no row that passed now fails [`REGRESSION_MAX_DROP`] |
+| M7 Retirement (all models), from Google's lifecycle pages via MCP | A model with a firm retirement date within 180 days is not used while its tier has another verified model; a "or later" floor or "no date announced" is shown, not excluded; Google's listed replacement joins the tier even under a new name [`RETIRE_WITHIN_DAYS`] |
 
 On failure the model is **held** (not promoted) or **rolled back** to the last known good one and **quarantined for 24 h** [`QUARANTINE_HOURS`]. If the older model fails the same task the same way, the newer one is restored (the task is at fault, not the model). If every regression build errors, the result is inconclusive and nothing is rolled back.
 
@@ -433,4 +463,4 @@ On failure the model is **held** (not promoted) or **rolled back** to the last k
   - `engine/serve.py` warms up the model registry in `.cache/` on startup, runs `engine/project_sync.py` in a background daemon thread to restore and back up `generated_projects/` to `gs://<bucket>/_projects/` every 60 seconds, and then starts `engine/prebuild.py` (after the restore and once models are resolved) so a fresh instance fills in whatever samples the bucket did not have, without waiting for a visitor; the same thread then redraws old decks, adds the Well-Architected review to saved demos that predate it, and plays the first reply of any chat demo that has none.
 * **Knobs**: `PREBUILD_SAMPLES` (default `true`) turns the pre-build off; `PREBUILD_PARALLEL` (default 4) is how many samples build at once; `python -m engine.prebuild --status` reports which samples are current, `--force` rebuilds all, `--push` uploads them to the bucket, `--decks` only redraws the decks of saved projects for a new slide layout, `--chats` only re-directs and plays the chat demos that have no first reply yet, `--reviews` only adds the Well-Architected review to saved projects that have none.
 
-Offline unit tests: `python -m unittest discover -s tests` (414 tests, about 5 seconds, no cloud calls). CI (`.github/workflows/ci.yml`) runs the same suite plus a `bash -n deploy.sh` syntax check on every push and pull request, with the actions pinned to commit hashes and a read-only token.
+Offline unit tests: `python -m unittest discover -s tests` (456 tests, about 5 seconds, no cloud calls). CI (`.github/workflows/ci.yml`) runs the same suite plus a `bash -n deploy.sh` syntax check on every push and pull request, with the actions pinned to commit hashes and a read-only token.

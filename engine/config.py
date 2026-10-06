@@ -65,6 +65,10 @@ class Policy:
     media_canary: float = 1.0
     media_canary_video: float = 1.0          # the Veo sample is the costly, slow one (minutes); 0.0 skips it
     regression_max_drop: float = 10.0        # post-upgrade regression suite: tolerated score drop per reference case (points)
+    # Lifecycle: a model whose official page lists a firm retirement date within this many days is not used
+    # (not promoted, not kept as champion, GA pick or fallback) while its tier has another verified model. A
+    # demo handed over today should not name a model that is gone in six months. 0 = only past dates.
+    retire_within_days: float = 180.0
 
 
 @dataclass(frozen=True)

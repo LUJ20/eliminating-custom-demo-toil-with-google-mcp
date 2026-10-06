@@ -8,7 +8,11 @@ Request shapes follow the official Agent Platform docs (Veo image-to-video, Gemi
 """
 import base64
 import io
+import os
 import re
+import shutil
+import subprocess
+import tempfile
 import time
 import wave
 from typing import Dict, List, Optional, Tuple
@@ -27,6 +31,8 @@ VIDEO_MAX_WAIT_S = 900
 MAX_MEDIA_BYTES = 200 * 1024 * 1024
 FIRST_FRAME_MIME = ("image/png", "image/jpeg")
 ASPECT = "16:9"  # every visual asset shares one frame, so an image can be a video's first frame
+SHOT_SECONDS = (4, 6, 8)  # durationSeconds values Veo accepts (official Veo model reference)
+FFMPEG_TIMEOUT_S = 300    # joining a few shots or reading a frame takes seconds; this bounds a hung process
 GRPC_TO_HTTP = {3: 400, 5: 404, 7: 403, 8: 429, 9: 400, 13: 500, 14: 503, 16: 401}
 POLICY_WORDS = ("blocked", "policy", "safety", "responsible ai", "prohibited")
 
@@ -107,11 +113,17 @@ def image(settings: Settings, model: str, location: str, prompt: str) -> Media:
 
 # ---------------------------------------------------------------------------------------------- video
 def video(settings: Settings, model: str, location: str, prompt: str, first_frame: Optional[Media] = None,
-          max_wait_s: int = VIDEO_MAX_WAIT_S) -> Media:
+          max_wait_s: int = VIDEO_MAX_WAIT_S, duration_s: Optional[int] = None) -> Media:
     """One 16:9 clip with native audio (Veo speaks quoted dialogue in the prompt, lip-synced). With
-    `first_frame` the clip starts from that image, so every variant shows the same character."""
+    `first_frame` the clip starts from that image, so every variant shows the same character (and a shot
+    continues the one before). `duration_s` is the shot length (4, 6 or 8 per the Veo docs; the model's
+    default when None)."""
     instance: Dict[str, object] = {"prompt": prompt}
     params: Dict[str, object] = {"sampleCount": 1, "aspectRatio": ASPECT}
+    if duration_s:
+        if int(duration_s) not in SHOT_SECONDS:
+            raise OutputError(f"a Veo shot is {', '.join(map(str, SHOT_SECONDS))} seconds long (got {duration_s})")
+        params["durationSeconds"] = str(int(duration_s))
     if first_frame:
         raw, mime = first_frame
         if mime not in FIRST_FRAME_MIME:
@@ -132,6 +144,97 @@ def video(settings: Settings, model: str, location: str, prompt: str, first_fram
             return _video_result(settings, status, model)
         if time.monotonic() > deadline:
             raise OutputError(f"{model} did not finish within {max_wait_s} s")
+
+
+def mp4_duration_s(data: bytes) -> float:
+    """Length of an MP4 in seconds, read from its movie header (mvhd); 0.0 when it cannot be read."""
+    i = data.find(b"mvhd")
+    if i < 0 or len(data) < i + 32:
+        return 0.0
+    version = data[i + 4]
+    try:
+        if version == 1:
+            scale = int.from_bytes(data[i + 24:i + 28], "big")
+            length = int.from_bytes(data[i + 28:i + 36], "big")
+        else:
+            scale = int.from_bytes(data[i + 16:i + 20], "big")
+            length = int.from_bytes(data[i + 20:i + 24], "big")
+    except (IndexError, ValueError):
+        return 0.0
+    return round(length / scale, 2) if scale else 0.0
+
+
+class StitchError(OutputError):
+    """ffmpeg is missing or failed: the shots could not be joined (the first shot is still a valid clip)."""
+
+
+def has_ffmpeg() -> bool:
+    """True when ffmpeg is on the PATH (the studio's container installs it; a laptop may not have it)."""
+    return bool(shutil.which("ffmpeg"))
+
+
+def _ffmpeg() -> str:
+    exe = shutil.which("ffmpeg")
+    if not exe:
+        raise StitchError("ffmpeg is not installed on this server; multi-shot videos need it to join the shots")
+    return exe
+
+
+def _run_ffmpeg(args: List[str], what: str) -> None:
+    try:
+        res = subprocess.run([_ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", *args], capture_output=True,
+                             timeout=FFMPEG_TIMEOUT_S)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise StitchError(f"ffmpeg failed to {what}: {e}") from e
+    if res.returncode != 0:
+        raise StitchError(f"ffmpeg failed to {what}: {res.stderr.decode(errors='replace')[-300:].strip()}")
+
+
+def last_frame(data: bytes) -> Media:
+    """The last frame of an MP4 as a JPEG (the first frame of the next shot, so the story continues)."""
+    with tempfile.TemporaryDirectory(prefix="shot-") as tmp:
+        src, out = os.path.join(tmp, "in.mp4"), os.path.join(tmp, "last.jpg")
+        with open(src, "wb") as f:
+            f.write(data)
+        _run_ffmpeg(["-sseof", "-0.2", "-i", src, "-frames:v", "1", "-update", "1", "-q:v", "2", out],
+                    "read the last frame")
+        try:
+            with open(out, "rb") as f:
+                frame = f.read()
+        except OSError as e:
+            raise StitchError(f"ffmpeg wrote no last frame: {e}") from e
+    if not frame:
+        raise StitchError("ffmpeg wrote an empty last frame")
+    return frame, "image/jpeg"
+
+
+def concat_videos(parts: List[bytes]) -> bytes:
+    """One MP4 from consecutive shots: a stream copy when the shots share a codec (Veo shots do), otherwise a
+    re-encode. Raises StitchError when ffmpeg is missing or fails."""
+    if len(parts) == 1:
+        return parts[0]
+    with tempfile.TemporaryDirectory(prefix="stitch-") as tmp:
+        names = []
+        for i, part in enumerate(parts):
+            p = os.path.join(tmp, f"shot{i}.mp4")
+            with open(p, "wb") as f:
+                f.write(part)
+            names.append(p)
+        listing = os.path.join(tmp, "shots.txt")
+        with open(listing, "w") as f:
+            f.write("".join(f"file '{n}'\n" for n in names))
+        out = os.path.join(tmp, "out.mp4")
+        try:
+            _run_ffmpeg(["-f", "concat", "-safe", "0", "-i", listing, "-c", "copy", "-movflags", "+faststart", out],
+                        "join the shots")
+        except StitchError:
+            _run_ffmpeg(["-f", "concat", "-safe", "0", "-i", listing, "-c:v", "libx264", "-preset", "veryfast",
+                         "-crf", "20", "-c:a", "aac", "-movflags", "+faststart", out], "join the shots (re-encode)")
+        with open(out, "rb") as f:
+            joined = f.read()
+    if len(joined) < min(len(p) for p in parts) // 2:
+        raise StitchError("the joined video is implausibly small")
+    return joined
 
 
 def _video_result(settings: Settings, status: dict, model: str) -> Media:

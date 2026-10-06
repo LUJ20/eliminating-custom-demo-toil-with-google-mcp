@@ -148,9 +148,14 @@ recommendation asks (the real result, e.g. the extracted fields, the ranked reco
 with their sources); agent_trace for agents, workflows and tool use (the agent's steps, tool by tool); chat for
 conversational assistants; text for written artifacts. Mix kinds freely; every deliverable plays a story scene.
 Cover every output the ask mentions. When the system reads visual inputs (scanned forms, invoices, receipts, photos,
-product images), also add one image deliverable per input kind: a realistic synthetic example of that input (a scanned
-claim form with a few legible fields, a photo of the damage) playing the scene where it is uploaded, listed before the
-deliverable that extracts or analyses it, so the viewer sees the input and then the result. Each language, locale, persona or
+product images), list each input kind in "visual_inputs" (up to {manifest.MAX_VISUAL_INPUTS}; [] when the system
+reads none) and add one image deliverable per input kind: a realistic synthetic example of that input (a scanned
+claim form with a few legible fields, a photo of the damage) playing the scene where it is uploaded, with "input_of"
+set to the id of the deliverable that extracts or analyses it and listed before that deliverable, so the viewer sees
+the input and then the result. A video's "seconds" is its length: the length the ask states, else what the scene
+needs; an even number from {manifest.MIN_VIDEO_S} to {manifest.MAX_VIDEO_S} (the studio films it as
+{manifest.MAX_SHOT_S}-second shots, each continuing the last, stitched into one video); a length written in the
+title or brief must be that same number. Each language, locale, persona or
 version the ask lists is its own variant of the same deliverable, never merged. When the same character must appear
 in every variant of a video (an avatar, presenter or agent), add an image deliverable for that character and set
 the video's "start_from" to its id. At most {max_assets} generated media files in total (variants of video, image,
@@ -177,7 +182,9 @@ words that starts with a verb>", "doc": <number of the supporting document above
 "deliverables": [{{"id": "<short_id>", "title": "<what the viewer gets>", "kind": "<kind>", "tier": "<tier>",
 "brief": "<what it must show or say, one or two sentences>", "variants": [{{"label": "<e.g. Japanese>",
 "language": "<BCP-47 code, or empty>"}}], "start_from": "<id of an image deliverable, or empty>",
-"beat": "<id of the story beat it plays>"}}]}}
+"seconds": <video length in seconds (even, {manifest.MIN_VIDEO_S} to {manifest.MAX_VIDEO_S}), 0 for other kinds>,
+"input_of": "<image deliverables only: id of the deliverable that reads this input, or empty>",
+"beat": "<id of the story beat it plays>"}}], "visual_inputs": ["<each kind of visual input the system reads, or none>"]}}
 Rules: {MIN_STAGES} to {MAX_STAGES} stages in execution order; every stage names a specific Google Cloud product;
 stage names 2 or 3 words; descriptions 8 to 14 words, no marketing adjectives."""
     text, _ = vertex.generate(settings, model, prompt, location=location, json_mode=True)
@@ -255,7 +262,8 @@ def validate_plan(text: str, catalog: Dict[str, dict], n_docs: int, max_assets: 
         clean.append({**f, "stage": f"{i}. {name}", "tier": tier, "features": feats[:MAX_FEATURES],
                       "doc": doc if 1 <= doc <= n_docs else 0,
                       "external": bool(named) and not _GOOGLE_MANAGED.search(f["service"])})
-    deliverables = manifest.validate_manifest(data.get("deliverables"), catalog, max_assets)
+    deliverables = manifest.validate_manifest(data.get("deliverables"), catalog, max_assets,
+                                              visual_inputs=data.get("visual_inputs"))
     return {"summary": current_names(_clean(data.get("summary"), 600)), "stages": clean, "deliverables": deliverables,
             "story": validate_story(data.get("story"), deliverables)}
 
@@ -439,12 +447,19 @@ def validate_verdict(text: str) -> dict:
 
 
 # ------------------------------------------------------------------------------------ media director
+def shots_for(d: dict) -> int:
+    """How many Veo shots a video deliverable is filmed as (1 for every other kind)."""
+    return len(manifest.shot_lengths(d.get("seconds") or manifest.DEFAULT_VIDEO_S)) if d.get("kind") == "video" else 1
+
+
 def direct_media(settings: Settings, model: str, location: str, hint: str, *, customer: str, ask: str, summary: str,
                  deliverables: List[dict], story: Optional[dict] = None) -> Tuple[Dict[Tuple[str, str], dict], float]:
     """Write the generation prompt and the script of every (deliverable, variant). -> ({(id, label): {prompt,
-    script}}, quality)."""
+    script[, shots]}}, quality). A video longer than one Veo shot gets one prompt and script per shot."""
     spec = json.dumps([{**{k: d[k] for k in ("id", "title", "kind", "brief", "start_from", "variants")},
-                        **({"scene": d["scene"]} if d.get("scene") else {})}
+                        **({"scene": d["scene"]} if d.get("scene") else {}),
+                        **({"seconds": d.get("seconds") or manifest.DEFAULT_VIDEO_S, "shots": shots_for(d)}
+                           if d["kind"] == "video" else {})}
                        for d in deliverables], ensure_ascii=False, indent=1)
     prompt = f"""You are the creative director of a customer demo. Write what each generative model receives.
 Customer: {customer}
@@ -454,16 +469,25 @@ Solution: {summary}
 Deliverables (JSON): {spec}
 For every deliverable and every variant, return "prompt" and "script":
 - script: the exact words spoken or shown, written natively in the variant's language (BCP-47 code; empty means
-  English), under 40 words, true to the brand and the use case. Empty for image, music, structured and
-  agent_trace. Tell the story: each
+  English), under 40 words per 8 seconds of video, true to the brand and the use case. Empty for image, music,
+  structured and agent_trace. Tell the story: each
   script plays the deliverable's scene as a real moment for the hero (a concrete detail such as a name, a place, a
   flight, an order or a number), never a generic greeting or a feature description. Variants of one deliverable
   read in order as one journey; the last scene of the story lands the payoff.
-- video: prompt = one cinematic shot description (subject, setting, camera, lighting, mood, the voice's gender,
-  age and tone) that contains the script verbatim inside double quotes as the line the on-screen character says.
-  Describe the character and voice identically in every variant so they look and sound like one brand (and the
-  setting too when the clip starts from an image); the action and mood follow the scene;
-  if the deliverable has start_from, the clip starts from that image, so describe that same character.
+- video: the BRIEF decides what is on screen, the scene only sets the moment. When the deliverable is the artifact
+  itself (an ad, commercial, trailer, product, explainer or social clip), film the product, place or subject the
+  brief names, as a professional crew would: no presenter, office, laptop or dashboard unless the brief asks for
+  one; the script is a voice-over, written in the prompt as Voice-over (gender, age, tone): "<script>"; the brand
+  or product name may appear as on-screen text or an end card. When the deliverable shows a person using the
+  system (a concierge, an avatar, a presenter, the hero at work), film that person and write the script in double
+  quotes as the line they say on camera. In both cases give subject, setting, camera move, lighting and mood, and
+  describe the character or voice identically in every variant so they look and sound like one brand (the setting
+  too when the clip starts from an image; with start_from, the clip starts from that image, so describe that same
+  subject). A video with "shots": k greater than 1 is filmed as k consecutive shots of equal length, each starting
+  from the last frame of the one before: return "shots": [{{"prompt": "...", "script": "..."}}] with exactly k items
+  in order, one continuous story (same subject, setting, light and voice; the action advances, the camera may
+  change), each shot's prompt containing that shot's script verbatim in double quotes (a shot may have an empty
+  script when nothing is said, but the video as a whole speaks). With "shots": 1 return "prompt" and "script" only.
 - image: prompt = a detailed visual description; for a character portrait, a front-facing, well-lit
   medium shot with a neutral background, suited to be the first frame of a video. For an input document or photo
   that another deliverable extracts or analyses (a scanned form, an invoice, a receipt, a damage photo): a realistic
@@ -491,7 +515,7 @@ For every deliverable and every variant, return "prompt" and "script":
 Never name model IDs, real people or copyrighted characters.
 {f"Your previous answer was rejected: {hint}" if hint else ""}
 Return JSON only: {{"assets": [{{"id": "<deliverable id>", "variant": "<variant label>", "prompt": "...",
-"script": "..."}}]}}"""
+"script": "...", "shots": [{{"prompt": "...", "script": "..."}}]}}]}} ("shots" only for videos with more than one shot)"""
     text, _ = vertex.generate(settings, model, prompt, location=location, json_mode=True)
     return validate_direction(text, deliverables), 1.0
 
@@ -507,7 +531,13 @@ def story_block(story: Optional[dict]) -> str:
             f"Challenge: {story.get('challenge', '')}\nScenes:\n{beats}\nPayoff: {story.get('payoff', '')}")
 
 
+def _squash(value) -> str:
+    return " ".join(str(value or "").split())
+
+
 def validate_direction(text: str, deliverables: List[dict]) -> Dict[Tuple[str, str], dict]:
+    """The director's JSON, checked. Every (deliverable, variant) gets {"prompt", "script"}; a video also gets
+    "shots": [{"prompt", "script", "seconds"}] (one per Veo shot; prompt and script are then the shots joined)."""
     try:
         data = vertex.parse_json(text)
     except ValueError as e:
@@ -518,26 +548,60 @@ def validate_direction(text: str, deliverables: List[dict]) -> Dict[Tuple[str, s
     got: Dict[Tuple[str, str], dict] = {}
     for it in items:
         if isinstance(it, dict):
-            p = " ".join(str(it.get("prompt") or "").split())
-            sc = " ".join(str(it.get("script") or "").split())
-            got[(str(it.get("id", "")), str(it.get("variant", "")))] = {"prompt": p, "script": sc}
+            shots = [{"prompt": _squash(s.get("prompt")), "script": _squash(s.get("script"))}
+                     for s in (it.get("shots") if isinstance(it.get("shots"), list) else []) if isinstance(s, dict)]
+            got[(str(it.get("id", "")), str(it.get("variant", "")))] = {"prompt": _squash(it.get("prompt")),
+                                                                        "script": _squash(it.get("script")),
+                                                                        "shots": shots}
     out: Dict[Tuple[str, str], dict] = {}
     for d in deliverables:
+        lengths = manifest.shot_lengths(d.get("seconds") or manifest.DEFAULT_VIDEO_S) if d["kind"] == "video" else []
         for v in d["variants"]:
             key = (d["id"], v["label"])
             a = got.get(key)
-            if not a or not a["prompt"]:
+            if not a:
                 raise OutputError(f"missing prompt for deliverable '{d['id']}' variant '{v['label']}'")
-            if len(a["prompt"]) > MAX_PROMPT or len(a["script"]) > MAX_SCRIPT:
+            if d["kind"] == "video":
+                a = _video_direction(a, d, v, lengths)
+            else:
+                a = {"prompt": a["prompt"], "script": a["script"]}
+            if not a["prompt"]:
+                raise OutputError(f"missing prompt for deliverable '{d['id']}' variant '{v['label']}'")
+            if len(a["prompt"]) > MAX_PROMPT * max(1, len(lengths)) or len(a["script"]) > MAX_SCRIPT * max(1, len(lengths)):
                 raise OutputError(f"prompt or script too long for '{d['id']}' / '{v['label']}'")
             if MODEL_ID_LITERAL.search(a["prompt"]):
                 raise OutputError(f"the prompt for '{d['id']}' / '{v['label']}' names a model ID")
             if d["kind"] in ("video", "speech", "chat") and not a["script"]:
                 raise OutputError(f"'{d['id']}' / '{v['label']}' needs a script in its language")
-            if d["kind"] == "video" and a["script"] not in a["prompt"]:
-                raise OutputError(f"the video prompt for '{d['id']}' / '{v['label']}' must contain its script "
-                                  "verbatim in double quotes, so the character speaks it")
             if d["kind"] in manifest.DATA_KINDS:
                 a = dict(a, script="")  # data outputs have no script: the prompt says what to produce
             out[key] = a
     return out
+
+
+def _video_direction(a: dict, d: dict, v: dict, lengths: List[int]) -> dict:
+    """One video asset: per-shot prompts and scripts (k shots), or the plain prompt/script for a single shot,
+    normalised to {"prompt", "script", "shots": [{"prompt", "script", "seconds"}]}."""
+    who = f"'{d['id']}' / '{v['label']}'"
+    k = len(lengths)
+    shots = a.get("shots") or []
+    if k > 1 and len(shots) != k:
+        raise OutputError(f"the video {who} is {d.get('seconds')} seconds = {k} shots of {'+'.join(map(str, lengths))} s; "
+                          f"return \"shots\" with exactly {k} items (got {len(shots)}), each with prompt and script")
+    if k == 1 and not shots:
+        shots = [{"prompt": a["prompt"], "script": a["script"]}]
+    for i, s in enumerate(shots, 1):
+        if not s["prompt"]:
+            raise OutputError(f"shot {i} of {who} has no prompt")
+        if len(s["prompt"]) > MAX_PROMPT or len(s["script"]) > MAX_SCRIPT:
+            raise OutputError(f"shot {i} of {who}: prompt or script too long")
+        if s["script"] and s["script"] not in s["prompt"]:
+            raise OutputError(f"shot {i} of {who}: the prompt must contain the shot's script verbatim in double quotes, "
+                              "so it is spoken (as voice-over or by the character on screen)")
+    if not any(s["script"] for s in shots):
+        raise OutputError(f"{who} needs a script in its language: the video must speak in at least one shot")
+    shots = [{**s, "seconds": sec} for s, sec in zip(shots, lengths)]
+    if k == 1:
+        return {"prompt": shots[0]["prompt"], "script": shots[0]["script"], "shots": shots}
+    return {"prompt": " ".join(f"Shot {i}: {s['prompt']}" for i, s in enumerate(shots, 1)),
+            "script": " ".join(s["script"] for s in shots if s["script"]), "shots": shots}

@@ -174,7 +174,7 @@ class JobTest(OfflineTestCase):
     def test_generates_every_variant_from_one_portrait(self):
         frames = []
 
-        def fake_video(settings, model, location, prompt, first_frame=None):
+        def fake_video(settings, model, location, prompt, first_frame=None, duration_s=None):
             frames.append(first_frame)
             return b"mp4", "video/mp4"
 

@@ -129,7 +129,7 @@ class JobQaTest(OfflineTestCase):
                 plan[(d["id"], v["label"])] = {"prompt": f'Say "{line}"', "script": line}
         return plan, 1.0
 
-    def _video(self, settings, model, location, prompt, first_frame=None):
+    def _video(self, settings, model, location, prompt, first_frame=None, duration_s=None):
         self.videos.append(prompt)
         return f"mp4-{len(self.videos)}".encode(), "video/mp4"
 

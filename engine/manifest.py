@@ -50,6 +50,17 @@ MAX_DELIVERABLES = 6
 MAX_VARIANTS = 8
 LANG_RE = re.compile(r"^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$")  # BCP-47, e.g. ja, pt-BR, zh-Hans
 
+# Video length. Veo makes one shot of 4, 6 or 8 seconds (durationSeconds, per the Veo docs); a longer video is a
+# sequence of shots, each starting from the last frame of the one before, stitched into one file. So a video can
+# be any even length from MIN_VIDEO_S to MAX_VIDEO_S; the planner's "seconds" is snapped to that grid.
+SHOT_LENGTHS = (4, 6, 8)
+MAX_SHOT_S = 8
+MIN_VIDEO_S = 4
+MAX_VIDEO_S = 32           # 4 shots: enough for a commercial, bounded cost and build time
+DEFAULT_VIDEO_S = 8
+DURATION_RE = re.compile(r"\b(\d{1,3})\s*(?:-\s*)?(?:s|sec|secs|second|seconds)\b", re.I)
+MAX_VISUAL_INPUTS = 3
+
 # Output contracts of the data kinds
 MAX_TITLE = 120
 MAX_COLUMNS = 12
@@ -68,6 +79,36 @@ SCALARS = (str, int, float, bool, type(None))
 
 def _clean(value, limit: int) -> str:
     return " ".join(str(value or "").split())[:limit]
+
+
+def snap_seconds(value) -> int:
+    """The video length the studio will make for a planned length: an even number of seconds between MIN_VIDEO_S
+    and MAX_VIDEO_S (odd values round up, missing or invalid values mean DEFAULT_VIDEO_S)."""
+    try:
+        s = int(round(float(value)))
+    except (TypeError, ValueError):
+        return DEFAULT_VIDEO_S
+    if s <= 0:
+        return DEFAULT_VIDEO_S
+    s = min(MAX_VIDEO_S, max(MIN_VIDEO_S, s))
+    return s + (s % 2)
+
+
+def shot_lengths(seconds: int) -> List[int]:
+    """The shots that make a video of `seconds` (each 4, 6 or 8 s, longest first), e.g. 16 -> [8, 8],
+    10 -> [6, 4], 20 -> [8, 6, 6]."""
+    s = snap_seconds(seconds)
+    n = -(-s // MAX_SHOT_S)  # ceil
+    base = (s // n) - ((s // n) % 2)
+    shots = [base] * n
+    for i in range((s - base * n) // 2):
+        shots[i] += 2
+    return shots
+
+
+def lengths_in_text(text: str) -> List[int]:
+    """Every video length a title or brief states ("16s", "16-second", "16 seconds")."""
+    return [int(m.group(1)) for m in DURATION_RE.finditer(text or "")]
 
 
 def kind_label(kind: str) -> str:
@@ -90,11 +131,13 @@ def media_count(deliverables: List[dict]) -> int:
     return sum(len(d["variants"]) for d in deliverables if d["kind"] in MEDIA_KINDS and d["tier"])
 
 
-def validate_manifest(raw, catalog: Dict[str, dict], max_assets: int) -> List[dict]:
+def validate_manifest(raw, catalog: Dict[str, dict], max_assets: int, visual_inputs=None) -> List[dict]:
     """The planner's deliverables, checked. Raises OutputError for anything the planner should fix. A kind
-    with no verified model in this project is kept with status "unsupported", so the UI can say so."""
+    with no verified model in this project is kept with status "unsupported", so the UI can say so.
+    `visual_inputs` is the planner's list of visual inputs the system reads (scanned forms, photos, ...): each
+    needs an image deliverable with "input_of" set to the deliverable that reads it, listed before it."""
     if raw in (None, "", []):
-        return []
+        raw = []
     if not isinstance(raw, list):
         raise OutputError("deliverables must be a JSON list")
     if len(raw) > MAX_DELIVERABLES:
@@ -121,21 +164,61 @@ def validate_manifest(raw, catalog: Dict[str, dict], max_assets: int) -> List[di
             raise OutputError(f"deliverable {i} ({kind}) cannot use tier '{tier}'; use {' or '.join(KINDS[kind])}")
         usable = [t for t in KINDS[kind] if t in catalog]
         tier = tier if tier in usable else (usable[0] if usable else "")
+        seconds = _video_seconds(i, kind, d.get("seconds"), f"{title} {brief}")
         out.append({"id": did, "title": title, "kind": kind, "tier": tier, "brief": brief,
                     "variants": _variants(i, d.get("variants")),
                     "start_from": slugify(d.get("start_from"))[:40] if d.get("start_from") else "",
                     "beat": slugify(d.get("beat"))[:20] if d.get("beat") else "",
+                    "seconds": seconds,
+                    "input_of": slugify(d.get("input_of"))[:40] if kind == "image" and d.get("input_of") else "",
                     "status": "" if tier else "unsupported"})
     images = {d["id"] for d in out if d["kind"] == "image"}
     for d in out:
         if d["start_from"] and (d["kind"] != "video" or d["start_from"] not in images):
             raise OutputError(f"deliverable '{d['id']}': start_from must name an image deliverable, and only a "
                               "video can start from one")
+    _check_inputs(out, visual_inputs)
     n = media_count(out)
     if n > max_assets:
         raise OutputError(f"the deliverables need {n} generated media files; keep the total to {max_assets} "
                           "(merge deliverables, or use speech only where no video already speaks)")
     return out
+
+
+def _video_seconds(i: int, kind: str, raw, text: str) -> int:
+    """A video's planned length: "seconds" snapped to the lengths the studio makes; a length stated in the
+    title or brief must be that length, so the viewer is never promised a 16-second ad and shown 8 seconds."""
+    if kind != "video":
+        return 0
+    stated = lengths_in_text(text)
+    seconds = snap_seconds(raw if raw not in (None, "", 0) else (stated[0] if stated else DEFAULT_VIDEO_S))
+    wrong = [s for s in stated if s != seconds]
+    if wrong:
+        raise OutputError(f"deliverable {i} says {wrong[0]} seconds; video lengths are even numbers from "
+                          f"{MIN_VIDEO_S} to {MAX_VIDEO_S} seconds (8-second shots stitched together), so set "
+                          f"\"seconds\": {seconds} and write {seconds}-second in its title and brief")
+    return seconds
+
+
+def _check_inputs(out: List[dict], visual_inputs) -> None:
+    """Every declared visual input needs an example image (input_of) before the deliverable that reads it."""
+    inputs = [_clean(x, 80) for x in (visual_inputs if isinstance(visual_inputs, list) else []) if _clean(x, 80)]
+    inputs = inputs[:MAX_VISUAL_INPUTS]
+    order = {d["id"]: n for n, d in enumerate(out)}
+    examples = [d for d in out if d["kind"] == "image" and d["input_of"]]
+    for d in examples:
+        target = next((x for x in out if x["id"] == d["input_of"]), None)
+        if not target or target["kind"] == "image":
+            raise OutputError(f"image '{d['id']}' has input_of '{d['input_of']}'; name the deliverable that reads "
+                              "this input (a structured result, agent run, chat or text)")
+        if order[d["id"]] > order[target["id"]]:
+            raise OutputError(f"list the input example '{d['id']}' before '{target['id']}', the deliverable that "
+                              "reads it, so the viewer sees the input and then the result")
+    if len(examples) < len(inputs):
+        missing = ", ".join(inputs[len(examples):])
+        raise OutputError(f"the system reads these visual inputs: {missing}; add one image deliverable per input "
+                          "(a realistic synthetic example with a few legible fields) with \"input_of\" set to the "
+                          "deliverable that extracts or analyses it, listed before that deliverable")
 
 
 def _variants(i: int, raw) -> List[dict]:

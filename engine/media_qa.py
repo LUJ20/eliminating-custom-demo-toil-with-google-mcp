@@ -3,18 +3,22 @@ it can observe, against the deliverable (kind, title, brief, story scene) and th
 
 Checks depend on the kind: language spoken, script followed, lip-sync, same person as the start image,
 brand safety, legible on-screen text (critical on an image, soft on a video), and whether the asset matches its
-prompt. Written outputs are checked too:
-a "text" deliverable's generated text, and a "chat" deliverable's transcript (the system instruction the media
-director wrote, the first user message and the assistant's first reply) are sent as a text part, never as inline
-media. When the deliverable plays a
-story scene, a soft "plays_scene" check judges whether the asset fits it. The answer is JSON, validated strictly
-(a bad answer raises OutputError so the Troubleshooter re-prompts). The verdict is "pass" when every critical
-check passes. No model ID is named here: the caller picks the model through the resolver.
+prompt and brief ("matches_prompt", critical for a video or an image: a clip of the wrong subject is useless in a
+demo, so the job has the director rewrite the prompt and films it again; see deliverables.py). Written outputs are
+checked too: a "text" deliverable's generated text, and a "chat" deliverable's transcript (the system instruction
+the media director wrote, the first user message and the assistant's first reply) are sent as a text part, never as
+inline media. When the deliverable plays a story scene, a soft "plays_scene" check judges whether the asset fits it.
+The answer is JSON, validated strictly (a bad answer raises OutputError so the Troubleshooter re-prompts). The
+verdict is "pass" when every critical check passes. No model ID is named here: the caller picks the model through
+the resolver.
 
 Data outputs ("structured" results and "agent_trace" runs) are JSON, also sent as a text part. Their
 "schema_valid" check is programmatic: it runs before any model call (schema_failure()), and a broken output fails
 critically without asking the reviewer, so the job regenerates it with the reason. An agent run is also judged on
 "plausible_steps" and "safe_actions" (both critical).
+
+A video's "length" check is programmatic too (with_length()): the job reads the clip's real length from the file
+and compares it with the planned length; a short or long clip lowers the score and is reported, never failed.
 """
 import base64
 import json
@@ -50,8 +54,13 @@ CHECKS: Dict[str, Tuple[str, bool]] = {
                    "celebrities or third-party logos.", True),
     "on_screen_text": ("Any text visible on screen is legible and correctly spelled (no garbled pseudo-text). "
                        "If there is no text, ok=true.", False),
-    "matches_prompt": ("The content matches the generation prompt and the brief (subject, setting, style).", False),
+    "matches_prompt": ("The content is what the generation prompt and the brief ask for: the same subject (the "
+                       "product, place, document or person the brief names, not a person talking about it unless "
+                       "the brief asks for one), setting and style.", True),
     "mood": ("The music matches the requested genre, instruments, tempo and mood.", False),
+    # Programmatic (decided by the studio from the file, never sent to the reviewer): a video runs as long as the
+    # plan says. Soft: a short clip is reported with its real length, not failed.
+    "length": ("The clip is as long as the plan says (read from the file by the studio).", False),
     # Written outputs: regenerating text is cheap, so these decide the verdict.
     "written_language": ("The text is written in {language} (names and product terms may stay as they are).", True),
     "matches_brief": ("The text delivers what the brief and the generation prompt ask for (content, audience, "
@@ -72,7 +81,8 @@ CRITICAL = frozenset(n for n, (_, crit) in CHECKS.items() if crit)
 # Critical for one kind only: garbled text on an image (a form, a chart, a sign) is a defect, and an image is cheap
 # to regenerate; on a video, incidental signage only lowers the score.
 KIND_CRITICAL = frozenset({("image", "on_screen_text")})
-PROGRAMMATIC = frozenset({"schema_valid"})  # decided by code before the reviewer is called
+PROGRAMMATIC = frozenset({"schema_valid", "length"})  # decided by code, never asked of the reviewer
+LENGTH_TOLERANCE_S = 1.5  # a Veo shot runs a little under or over its durationSeconds; joined shots add up
 
 
 def is_critical(kind: str, name: str) -> bool:
@@ -317,15 +327,57 @@ def skipped(reason: str) -> dict:
             "reason": _bounded(reason, MAX_SUMMARY)}
 
 
+def findings(result: dict) -> str:
+    """The failed checks of a result as one line ('' if none failed): what a regeneration hint or the director's
+    re-direct tells the model."""
+    bad = [f"{c['name'].replace('_', ' ')}: {c['why']}" for c in (result or {}).get("checks", []) if not c.get("ok")]
+    return _bounded("; ".join(bad), 560)
+
+
 def failed_hint(result: dict) -> str:
     """A regeneration hint built from the failed checks of a result ('' if none failed)."""
-    bad = [f"{c['name'].replace('_', ' ')}: {c['why']}" for c in result.get("checks", []) if not c.get("ok")]
-    return _bounded("a reviewer found these problems, fix them: " + "; ".join(bad), 600) if bad else ""
+    bad = findings(result)
+    return _bounded("a reviewer found these problems, fix them: " + bad, 600) if bad else ""
 
 
 def off_scene(result: dict) -> bool:
     """True if the soft story-scene check ran and failed."""
     return any(c.get("name") == "plays_scene" and c.get("ok") is False for c in (result or {}).get("checks") or [])
+
+
+def off_brief(result: dict) -> bool:
+    """True if the reviewer found the clip or image shows something other than what the prompt and brief ask for
+    (matches_prompt failed): regenerating from the same prompt would repeat it, so the director rewrites it."""
+    return any(c.get("name") == "matches_prompt" and c.get("ok") is False for c in (result or {}).get("checks") or [])
+
+
+def wrong_length(result: dict) -> bool:
+    """True if the soft length check ran and failed (the video does not run the planned length)."""
+    return any(c.get("name") == "length" and c.get("ok") is False for c in (result or {}).get("checks") or [])
+
+
+def length_check(wanted_s: int, got_s: float) -> dict:
+    """The programmatic length check of a video: ok when the clip runs the planned length within
+    LENGTH_TOLERANCE_S."""
+    ok = got_s > 0 and abs(got_s - wanted_s) <= LENGTH_TOLERANCE_S
+    why = (f"the clip runs {got_s:g} s; the plan asks for {wanted_s} s" if got_s > 0
+           else f"the clip's length could not be read from the file; the plan asks for {wanted_s} s")
+    if ok:
+        why = f"the clip runs {got_s:g} s, as planned ({wanted_s} s)"
+    return {"name": "length", "ok": ok, "why": _bounded(why, MAX_WHY), "critical": False}
+
+
+def with_length(result: dict, wanted_s, got_s: float) -> dict:
+    """A video's result with the length check added and the score recomputed (the verdict is unchanged: the check
+    is soft). A skipped result, or one without a planned length, is returned as it is."""
+    try:
+        wanted = int(wanted_s or 0)
+    except (TypeError, ValueError):
+        wanted = 0
+    if wanted <= 0 or (result or {}).get("verdict") not in ("pass", "fail"):
+        return result
+    checks = [c for c in result.get("checks", []) if c.get("name") != "length"] + [length_check(wanted, float(got_s or 0))]
+    return {**result, **_scored(checks, result.get("summary", ""))}
 
 
 def _part(data: bytes, mime: str) -> dict:

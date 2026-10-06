@@ -147,7 +147,10 @@ class VisualInputsTest(unittest.TestCase):
                                    deliverables=[deliverable])
         planner, director = seen["prompts"]
         self.assertIn("one image deliverable per input kind", planner)
-        self.assertIn("listed before the\ndeliverable that extracts or analyses it", planner)
+        self.assertIn('"input_of"', planner)
+        self.assertIn("listed before that deliverable", planner)
+        self.assertIn('"visual_inputs"', planner)
+        self.assertIn("even number from 4 to 32", planner)  # a video's length, filmed as stitched shots
         self.assertIn("exactly the facts that deliverable reports", director)
         self.assertIn("legible fields (5 to 8, no dense fine print)", director)
         self.assertIn("an example of that input shown before its result", brain.CRITERIA_HELP["deliverable_coverage"])
