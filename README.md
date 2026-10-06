@@ -3,6 +3,11 @@
 Turn a customer use case into a Google Cloud demo in 3 to 10 minutes (the built-in samples open instantly): a
 grounded architecture, starter code, generated media, an editable deck and an eval scorecard.
 
+Nothing ships unchecked: every build is judged on a rubric and acceptance-tested on its own models, every output
+is reviewed and then measured with the market-standard metric of its modality (CLIP, VBench, EBU R128, WER,
+Agent Platform evaluation service), and every model upgrade passes a golden set and a regression suite first
+(all rules in [Evaluation](#4-evaluation-every-rule-rubric-and-threshold)).
+
 **Author:** Layolin Jesudhass
 
 ## What you get
