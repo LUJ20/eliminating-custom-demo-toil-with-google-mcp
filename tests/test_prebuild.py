@@ -311,7 +311,7 @@ class DeckRefreshTest(OfflineTestCase):
                 mock.patch.object(prebuild, "build") as build, mock.patch("builtins.print") as out:
             self.assertEqual(0, prebuild.main(["--decks"]))
         build.assert_not_called()
-        self.assertIn("1 deck(s) regenerated", "\n".join(str(c.args[0]) for c in out.call_args_list))
+        self.assertIn("1 project(s) refreshed (deck or SKILL.md)", "\n".join(str(c.args[0]) for c in out.call_args_list))
 
     def test_start_background_refreshes_decks_before_building(self):
         order = []
