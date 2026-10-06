@@ -1127,12 +1127,10 @@ base = get_settings()
 
 with st.sidebar:
     st.subheader("Settings")
-    project_id = st.text_input("GCP Project ID", value=base.project_id,
-                               help="From GOOGLE_CLOUD_PROJECT, .env or gcloud config").strip()
+    project_id = base.project_id  # fixed by the deployment: GOOGLE_CLOUD_PROJECT, .env or gcloud config
     drive_link = st.text_input("Google Drive folder link (optional)", value=base.drive_folder_id,
                                help="Paste a folder URL or ID. Leave empty to store artifacts in Cloud Storage.").strip()
-    bucket = st.text_input("GCS bucket", value=base.bucket if project_id == base.project_id
-                           else default_bucket(project_id)).strip()
+    bucket = st.text_input("GCS bucket", value=base.bucket).strip()
     mode = st.radio("Model mode", MODES, index=0 if base.allow_preview else 1,
                     help="Showcase: newest verified model per capability, previews included (best for demos). "
                          "Production: newest verified GA model per capability. Both are canary-gated with "

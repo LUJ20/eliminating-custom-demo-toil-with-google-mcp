@@ -97,8 +97,8 @@ for that, once.
 | Local port | default `8502` | `--port` |
 | Eval thresholds, media limits, model policy | defaults | copy [.env.example](.env.example) to `.env` and edit; every knob is listed there with its default |
 
-The sidebar also lets you switch the project, bucket, Drive folder and model mode for your own session without a
-redeploy. `--min-instances 0` costs nothing when idle, but a cold instance takes a few minutes to resolve models.
+The sidebar also lets you switch the bucket, Drive folder and model mode for your own session without a
+redeploy; the project is the one you deployed to. `--min-instances 0` costs nothing when idle, but a cold instance takes a few minutes to resolve models.
 
 ## Costs and limits
 
