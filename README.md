@@ -63,7 +63,7 @@ The full architecture (modules, workflows, every eval rule, deployment) is in th
 **2. Clone and deploy.** The project ID is the only value you have to give; everything else has a default.
 
 ```bash
-git clone https://github.com/cloud-gtm/eliminating-custom-demo-toil-with-google-mcp.git
+git clone https://github.com/LUJ20/eliminating-custom-demo-toil-with-google-mcp.git
 cd eliminating-custom-demo-toil-with-google-mcp
 ./deploy.sh --project YOUR_PROJECT_ID
 ```
