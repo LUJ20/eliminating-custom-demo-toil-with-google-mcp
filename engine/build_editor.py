@@ -50,7 +50,7 @@ from engine.config import Settings
 from engine.deck_generator import DECK_VERSION, deck_version
 from engine.mcp_knowledge_client import McpKnowledgeClient
 from engine.model_resolver import ROLES
-from engine.pii_sanitizer import AUDIT_FILE
+from engine.pii_sanitizer import AUDIT_FILE, PIISanitizer
 from engine.troubleshooter import OutputError, StepFailed
 from engine.usecase_synthesizer import RESULT_FILE, UseCaseSynthesizer, persisted, render_deck, rubric_score
 
@@ -217,9 +217,9 @@ def refresh_deck(settings: Settings, res: Dict[str, Any]) -> bool:
 
 
 def refresh_decks(settings: Settings) -> List[str]:
-    """refresh_deck for every saved project in the output folder (at app start and before a sample pre-build run,
-    so a new slide layout reaches the saved demos without rebuilding them). -> the slugs whose deck was rewritten.
-    A project that cannot be refreshed is logged and skipped."""
+    """refresh_deck (and refresh_skill) for every saved project in the output folder (at app start and before a
+    sample pre-build run, so a new slide layout or SKILL.md format reaches the saved demos without rebuilding them).
+    -> the slugs whose deck or SKILL.md was rewritten. A project that cannot be refreshed is logged and skipped."""
     root, done = settings.output_dir, []
     if not os.path.isdir(root):
         return done
@@ -229,13 +229,42 @@ def refresh_decks(settings: Settings) -> List[str]:
                 os.path.isfile(os.path.join(pd, f)) for f in (CONFIG, RESULT_FILE)):
             continue  # not a generated project
         try:
-            if refresh_deck(settings, load_result(settings, pd)):
+            res = load_result(settings, pd)
+            if refresh_deck(settings, res) | refresh_skill(settings, res):
                 done.append(name)
         except Exception as e:  # one broken project must not stop the sweep
             logger.warning("deck refresh of %s skipped: %s", name, redact(str(e))[:200])
     if done:
-        logger.info("deck layout %s: regenerated the deck of %s", DECK_VERSION, ", ".join(done))
+        logger.info("deck layout %s / SKILL.md format: refreshed %s", DECK_VERSION, ", ".join(done))
     return done
+
+
+def refresh_skill(settings: Settings, res: Dict[str, Any]) -> bool:
+    """Rewrite the SKILL.md of a finished build (and the zip that carries it) when the file on disk is not what the
+    current generator writes from the stored result: a new SKILL.md format (bom.skill_markdown) reaches saved demos
+    without a rebuild or a model call. The rewrite is recorded as the saved version, so the project stays clean; a
+    project with unsaved edits is left alone. -> True when SKILL.md was rewritten."""
+    pd = res.get("project_dir") or ""
+    if not (pd and res.get("final_status") and res.get("stages") and res.get("customer_name") and os.path.isdir(pd)
+            and os.path.isfile(os.path.join(pd, bom_mod.SKILL_FILE))):
+        return False  # not a finished build with a package, or a build made before the SKILL.md existed (add_bom)
+    bom = res.get("bom") if isinstance(res.get("bom"), dict) else {}
+    text, _ = PIISanitizer.for_settings(settings).sanitize_text(bom_mod.skill_markdown(res, bom))
+    if _read(pd, bom_mod.SKILL_FILE) == text or is_dirty(pd):
+        return False
+    with _editor_lock(pd), file_lock(os.path.join(settings.cache_dir, f"build_{os.path.basename(pd)}")):
+        if _read(pd, bom_mod.SKILL_FILE) == text:  # another process or thread just did it
+            return False
+        write_text_atomic(os.path.join(pd, bom_mod.SKILL_FILE), text)
+        files = {name: _read(pd, name) for name in PACKAGE if os.path.isfile(os.path.join(pd, name))}
+
+        def zip_to(tmp: str) -> None:
+            with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
+                for name, content in sorted(files.items()):
+                    zf.writestr(name, content)
+        _write_binary(pd, res["zip_path"], zip_to)
+        versions.mark_saved(pd, versions.snapshot(pd, "SKILL.md format refreshed"))
+    return True
 
 
 def add_review(settings: Settings, res: Dict[str, Any], synth: Optional[UseCaseSynthesizer] = None) -> bool:

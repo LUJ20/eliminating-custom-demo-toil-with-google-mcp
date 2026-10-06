@@ -17,7 +17,9 @@ demo at once instead of starting a ten-minute build.
 - refresh_chats(): a chat set up before the assistant got its context (no played first reply) is directed and
   played again in place (engine/deliverables.redirect), no rebuild of the project.
 - refresh_decks(): a new slide layout (deck_generator.DECK_VERSION) needs no rebuild: the decks of all saved
-  projects are regenerated from their stored results at app start and before a CLI run (seconds, no model call).
+  projects are regenerated from their stored results at app start and before a CLI run (seconds, no model call);
+  the same sweep rewrites a saved project's SKILL.md and zip when the SKILL.md generator changed
+  (build_editor.refresh_skill).
 - refresh_reviews(): a saved project built before the Well-Architected review existed gets its review in place
   (build_editor.add_review: one MCP lookup and one model call per project), no rebuild.
 
@@ -182,9 +184,9 @@ def build(settings: Settings, customer: str, ask: str,
 
 
 def refresh_decks(settings: Settings, log: Callable[[str], None] = logger.info) -> List[str]:
-    """Regenerate the deck of every saved project whose deck predates the current slide layout
-    (build_editor.refresh_decks): seconds, no model call, nothing else in the projects changes. Never raises.
-    -> the project slugs whose deck was rewritten."""
+    """Regenerate the deck of every saved project whose deck predates the current slide layout, and the SKILL.md
+    (with its zip) of every saved project whose SKILL.md predates the current format (build_editor.refresh_decks):
+    seconds, no model call, nothing else in the projects changes. Never raises. -> the project slugs touched."""
     try:
         from engine.build_editor import refresh_decks as sweep  # heavy imports: only when it really runs
         done = sweep(settings)
@@ -192,7 +194,7 @@ def refresh_decks(settings: Settings, log: Callable[[str], None] = logger.info) 
         logger.warning("deck refresh failed: %s", redact(str(e))[:200])
         return []
     if done:
-        log(f"Decks regenerated for the new slide layout: {', '.join(done)}")
+        log(f"Decks or SKILL.md files refreshed for the current layout and format: {', '.join(done)}")
     return done
 
 
@@ -438,7 +440,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
     done = refresh_decks(s, log=lambda m: print(m))
     if a.decks:
-        print(f"  {len(done)} deck(s) regenerated; the others were already on slide layout {DECK_VERSION}")
+        print(f"  {len(done)} project(s) refreshed (deck or SKILL.md); the others were already on slide layout "
+              f"{DECK_VERSION} and the current SKILL.md format")
         return 0
     if a.reviews:
         done = refresh_reviews(s, log=lambda m: print(m), parallel=a.parallel)

@@ -169,7 +169,8 @@ class DocumentsTest(OfflineTestCase):
         self.assertIn("Welcome to Acme.", docs["demo"])  # the clip script of the segment's beat
         self.assertIn("assessment practice one.", docs["poc"])
         self.assertIn("manual-answering", docs["skills"])
-        self.assertIn("name: acme-tools-demo-pipeline", docs["skills"])
+        self.assertIn("name: running-acme-tools-demo", docs["skills"])
+        self.assertIn("running_acme_tools_demo", docs["skills"])
 
     def test_documents_without_a_narrative_say_what_is_missing(self):
         docs = bom.render_docs(self.result(bom.unavailable("the writer timed out")))
@@ -201,27 +202,78 @@ class DocumentsTest(OfflineTestCase):
         self.assertEqual(bom.doc_title("nope"), "nope")
 
 
+def frontmatter(md: str) -> dict:
+    """Parse the YAML frontmatter the way an agent runtime does (no PyYAML here): `key: value` lines and `key: >-`
+    folded block scalars whose indented lines join with single spaces."""
+    assert md.startswith("---\n")
+    head = md[4:].split("\n---\n", 1)[0].split("\n")
+    out, key = {}, None
+    for line in head:
+        if line.startswith("  ") and key:
+            out[key] = (out[key] + " " + line.strip()).strip()
+        else:
+            key, _, value = line.partition(":")
+            out[key] = "" if value.strip() == ">-" else value.strip()
+    return out
+
+
 class SkillMarkdownTest(unittest.TestCase):
     RESULT = {"slug": "acme-tools", "customer_name": "Acme Tools", "summary": "Answers questions.",
               "usecase_ask": "Support agent.", "stages": STAGES, "eval_metrics": [],
               "grounding_sources": [{"title": "Cloud Run", "url": "https://cloud.google.com/run/docs"}]}
 
-    def test_frontmatter_and_sections(self):
+    def test_frontmatter_is_a_triggering_contract(self):
         md = bom.skill_markdown(self.RESULT, narrative())
-        self.assertTrue(md.startswith("---\nname: acme-tools-demo-pipeline\ndescription: "))
-        self.assertIn("\n---\n", md[4:])
-        for head in ("# Acme Tools demo pipeline", "## When to use this skill", "## Steps", "## The stages",
-                     "## Skills in this pipeline", "## Guardrails", "## References"):
+        fm = frontmatter(md)
+        self.assertEqual(fm["name"], "running-acme-tools-demo")           # kebab-case, gerund form
+        self.assertEqual(bom.skill_folder(self.RESULT), "running_acme_tools_demo")
+        self.assertTrue(md.startswith("---\nname: running-acme-tools-demo\ndescription: >-\n  Runs, checks and extends "))
+        desc = fm["description"]
+        self.assertEqual(desc, bom.skill_description(self.RESULT, narrative()))
+        self.assertLessEqual(len(desc), bom.SKILL_DESCRIPTION_MAX)
+        self.assertIn("Acme Tools demo pipeline on Google Cloud: Answer support questions", desc)
+        self.assertIn(" Use when running or reproducing the Acme Tools demo", desc)
+        self.assertIn(" Don't use for designing a demo from a different ask", desc)
+        self.assertNotIn("python ", desc)                                   # no commands or paths in the contract
+        for line in md[4:].split("\n---\n", 1)[0].split("\n")[2:]:
+            self.assertTrue(line.startswith("  "), line)                   # the whole description is in the block
+
+    def test_description_stays_under_the_platform_limit(self):
+        long = narrative(objective="x" * 2000)
+        self.assertLessEqual(len(bom.skill_description(self.RESULT, long)), bom.SKILL_DESCRIPTION_MAX)
+        self.assertTrue(bom.skill_description(self.RESULT, long).endswith("unrelated to this pipeline."))
+        self.assertLessEqual(len(bom.skill_name({"slug": "a" * 200})), bom.SKILL_NAME_MAX)
+        self.assertEqual(bom.skill_name({"slug": "Cymbal Outdoor_Gear!"}), "running-cymbal-outdoor-gear-demo")
+
+    def test_body_is_an_imperative_runbook_with_exact_commands(self):
+        md = bom.skill_markdown(self.RESULT, narrative())
+        for head in ("# Acme Tools demo pipeline", "## Quick start", "## Stages", "## Acceptance criteria",
+                     "## Skills inside the pipeline", "## Gotchas", "## References"):
             self.assertIn(head, md)
+        self.assertIn("```bash\nunzip acme-tools_codebase.zip -d running_acme_tools_demo\ncd running_acme_tools_demo\n"
+                      "pip install -r requirements.txt\nexport GOOGLE_CLOUD_PROJECT={project_id}\n"
+                      "python pipeline.py --dry-run\npython pipeline.py \"{input}\"\n```", md)
+        self.assertIn("| 2. Answer | Agent Platform (generateContent) | fast | gemini-9.9-flash | Answers questions. |", md)
+        self.assertIn("| 1. Ingest | Cloud Storage (objects.insert) | - | - | Stores manuals. |", md)
+        self.assertIn("(`fast` -> `MODEL_FAST`)", md)
         self.assertIn("**manual-answering**", md)
-        self.assertIn("2. **2. Answer** (Agent Platform, gemini-9.9-flash): Answers questions.", md)
         self.assertIn("[Cloud Run](https://cloud.google.com/run/docs)", md)
+        self.assertGreater(md.count("\n"), 50)                              # a root skill, not a micro-skill
+        self.assertNotIn("## Contributions", md)                            # only with a bundled contributing guide
+
+    def test_table_cells_cannot_break_the_tables(self):
+        stages = [{**STAGES[1], "description": "Answers | with\na pipe", "api": ""}]
+        md = bom.skill_markdown({**self.RESULT, "stages": stages, "eval_metrics": [
+            {"metric": "Code | validity", "threshold": "compiles", "value": "PASS"}]}, narrative())
+        self.assertIn("| 2. Answer | Agent Platform | fast | gemini-9.9-flash | Answers with a pipe |", md)
+        self.assertIn("| Code validity | compiles | PASS |", md)
 
     def test_without_a_narrative_the_skill_still_runs_the_pipeline(self):
         md = bom.skill_markdown(self.RESULT, bom.unavailable("timed out"))
-        self.assertIn("name: acme-tools-demo-pipeline", md)
+        self.assertIn("name: running-acme-tools-demo", md)
+        self.assertIn("on Google Cloud: Answers questions. Use when", frontmatter(md)["description"])
         self.assertIn("written when the demo is rebuilt", md)
-        self.assertIn("Answers questions.", md)
+        self.assertIn("| (no scorecard rows recorded) | - | - |", md)
 
 
 class FakeSynth:
@@ -237,19 +289,19 @@ class FakeSynth:
         return copy.deepcopy(self.answer)
 
 
-class AddBomTest(OfflineTestCase):
-    """Builds saved before the BOM existed get one in place (build_editor.add_bom), honouring BOM_ASSETS."""
+class ProjectCase(OfflineTestCase):
+    """A finished build saved on disk, for the in-place backfills (add_bom, refresh_skill)."""
 
     def setUp(self):
         super().setUp()
         seed_registry(self.settings)
         self.settings = dataclasses.replace(self.settings, bom_enabled=True)
 
-    def finished_project(self, bom_value=None) -> str:
-        folder = prebuild.project_dir(self.settings, "Acme Tools")
+    def finished_project(self, bom_value=None, customer: str = "Acme Tools") -> str:
+        folder = prebuild.project_dir(self.settings, customer)
         os.makedirs(folder, exist_ok=True)
         slug = os.path.basename(folder)
-        res = {"customer_name": "Acme Tools", "usecase_ask": "Support agent for Acme.", "final_status": "PASSED",
+        res = {"customer_name": customer, "usecase_ask": "Support agent for Acme.", "final_status": "PASSED",
                "mode": self.settings.mode, "score": 100.0, "summary": BLUEPRINT["summary"], "stages": STAGES,
                "deliverables": [], "story": STORY, "models": {}, "generation": us.BUILD_GENERATION, "package_files": [],
                "whats_new": [], "attempt_stats": [], "incidents": [], "grounding_sources": [], "build_id": "b1",
@@ -272,6 +324,10 @@ class AddBomTest(OfflineTestCase):
         synth = FakeSynth(settings, answer if answer is not None else narrative())
         return build_editor.add_bom(settings, res, synth), res, synth
 
+
+class AddBomTest(ProjectCase):
+    """Builds saved before the BOM existed get one in place (build_editor.add_bom), honouring BOM_ASSETS."""
+
     def test_a_saved_build_gets_its_bom_in_place_and_stays_clean(self):
         folder = self.finished_project()
         slug = os.path.basename(folder)
@@ -287,7 +343,7 @@ class AddBomTest(OfflineTestCase):
         self.assertEqual(stored["final_status"], "PASSED")
         with open(os.path.join(folder, bom.SKILL_FILE), encoding="utf-8") as f:
             text = f.read()
-        self.assertIn("-demo-pipeline", text)
+        self.assertIn("name: running-acme-tools-demo", text)
         self.assertIn("# Acme Tools demo pipeline", text)
         with zipfile.ZipFile(os.path.join(folder, f"{slug}_codebase.zip")) as zf:
             self.assertIn(bom.SKILL_FILE, zf.namelist())
@@ -329,6 +385,57 @@ class AddBomTest(OfflineTestCase):
         self.assertEqual((added, synth.calls), (False, 0))
         self.assertFalse(os.path.exists(os.path.join(folder, bom.SKILL_FILE)))
 
+
+class RefreshSkillTest(ProjectCase):
+    """A saved build whose SKILL.md predates the current format gets the new one in place (build_editor.refresh_skill):
+    no model call, the zip follows, the project stays clean."""
+
+    def old_format_project(self) -> str:
+        folder = self.finished_project(narrative())
+        with open(os.path.join(folder, bom.SKILL_FILE), "w", encoding="utf-8") as f:
+            f.write("---\nname: acme-tools-demo-pipeline\ndescription: old format\n---\n# old\n")
+        return folder
+
+    def test_an_old_skill_file_is_rewritten_with_its_zip_and_stays_clean(self):
+        folder = self.old_format_project()
+        slug = os.path.basename(folder)
+        res = build_editor.load_result(self.settings, folder)
+        self.assertTrue(build_editor.refresh_skill(self.settings, res))
+        with open(os.path.join(folder, bom.SKILL_FILE), encoding="utf-8") as f:
+            text = f.read()
+        self.assertEqual(text, bom.skill_markdown(res, res["bom"]))
+        self.assertIn("name: running-acme-tools-demo", text)
+        with zipfile.ZipFile(os.path.join(folder, f"{slug}_codebase.zip")) as zf:
+            self.assertEqual(zf.read(bom.SKILL_FILE).decode("utf-8"), text)
+            self.assertIn("pipeline.py", zf.namelist())
+        self.assertFalse(versions.is_dirty(folder))
+        self.assertFalse(build_editor.refresh_skill(self.settings, res))  # current: nothing to do
+
+    def test_unsaved_edits_and_builds_without_a_skill_file_are_left_alone(self):
+        folder = self.old_format_project()
+        versions.ensure_baseline(folder)
+        with open(os.path.join(folder, "pipeline.py"), "a", encoding="utf-8") as f:
+            f.write("print('edited in chat')\n")
+        res = build_editor.load_result(self.settings, folder)
+        self.assertFalse(build_editor.refresh_skill(self.settings, res))
+        self.assertIn("old format", open(os.path.join(folder, bom.SKILL_FILE), encoding="utf-8").read())
+        bare = self.finished_project(customer="Bare Co")  # saved before the SKILL.md existed: add_bom's job
+        self.assertFalse(build_editor.refresh_skill(self.settings, build_editor.load_result(self.settings, bare)))
+        self.assertFalse(os.path.exists(os.path.join(bare, bom.SKILL_FILE)))
+
+    def test_the_start_up_sweep_refreshes_it(self):
+        folder = self.old_format_project()
+        self.assertEqual(build_editor.refresh_decks(self.settings), [os.path.basename(folder)])
+        self.assertIn("## Quick start", open(os.path.join(folder, bom.SKILL_FILE), encoding="utf-8").read())
+        self.assertEqual(build_editor.refresh_decks(self.settings), [])
+
+    def test_the_bom_documents_never_make_a_project_dirty(self):
+        folder = self.finished_project(narrative())
+        versions.ensure_baseline(folder)
+        res = {**build_editor.load_result(self.settings, folder), "project_dir": folder}
+        paths = bom.write_docs(res)
+        self.assertTrue(all(os.path.isfile(p) for p in paths.values()))
+        self.assertFalse(versions.is_dirty(folder))
 
 class AppCompilesTest(unittest.TestCase):
     def test_app_compiles(self):
