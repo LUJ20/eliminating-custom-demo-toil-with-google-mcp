@@ -154,6 +154,17 @@ flowchart TB
 
 Two different lists, on purpose. **What a demo can use** is open: the planner picks services for the customer's ask from the official docs (a delivery demo gets Maps, Fleet Engine and Firebase; an analytics demo gets BigQuery), so coverage is everything Google documents. **What the studio itself calls** is deliberately small: Gemini to think, the media models to make demo assets, Cloud Storage and Drive to keep and publish them. The studio designs, writes and evaluates the demo; it does not run the customer's services (generated code is never executed), so it needs no credentials for them.
 
+**When a use case needs a call outside that list**, each stage is handled by its kind, automatically:
+
+| The stage is… | What you get | Example |
+| :--- | :--- | :--- |
+| AI work a model the studio calls can do (answering, extraction, chat, retrieval, images, video, voice, music) | Designed, coded **and demonstrated live** on the real model, with its checks | Gemini extracts the fields of a synthetic claim; Veo renders the campaign clip |
+| A Google service doing non-AI work (BigQuery, Pub/Sub, Maps, Firestore, a Document AI processor) | Designed with its official doc, **real code** against that API in the package, and a **stand-in output** made by Gemini for the demo (table, JSON, agent trace, text), schema- and brief-checked | A BigQuery stage ships the SQL and client code; the demo shows the result table and a chart |
+| Something no model can stand in for (the customer's own data, a running deployed app, a capability with no tier) | Still in the architecture, docs and code; the demo output is a description or trace, and the scorecard shows it as not demonstrated | "Deploy to Cloud Run" ships the Dockerfile and command, not a live endpoint |
+| Questions over documents | One document up to 1,000 pages / 50 MB needs no index: Gemini reads it whole (each page as text and image, so charts and figures are answerable) behind a context cache. A corpus of many such documents is a **retrieval** design: the package code builds the index (Vertex AI Search data store or RAG Engine corpus: layout parser, chunking, embeddings; figures described at ingest so they are searchable) and asks Gemini with the retrieval tool; the demo chat answers from a synthetic slice of the corpus | Field-manual Q&A over 3,000 manuals: the package ships the data-store creation, the Cloud Storage import and the grounded chat; the demo answers from sample manual pages |
+
+Nothing fails and the gap is visible. Extending the studio is additive: a new capability is a new tier in `model_resolver.py` (models are still discovered from the docs) plus a generator in `media.py`; executing demos for real against customer services is the optional sandbox-job / managed-MCP step in the production plan.
+
 #### Design Responsibilities
 | Layer | Implementation | Responsibility |
 | :--- | :--- | :--- |
