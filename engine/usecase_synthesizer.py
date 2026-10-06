@@ -38,7 +38,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import requests
 
 from engine import acceptance, brain, deliverables as dlv, manifest, versions
-from engine.common import doc_title, doc_url, file_lock, redact, slugify
+from engine.common import doc_title, doc_url, file_lock, is_product_doc, redact, slugify
 from engine.config import Settings, get_settings
 from engine.deck_generator import build_usecase_deck
 from engine.dependency_resolver import Dependency, DependencyResolver, requirements_txt
@@ -52,7 +52,8 @@ logger = logging.getLogger(__name__)
 RESULT_FILE = ".studio_result.json"  # the build result, so the app can reload a project after an undo or restart
 # Stamped into every result. Bump it when every saved sample should be rebuilt on the next start (a new kind of
 # deliverable, a changed pipeline): prebuild.staleness() treats an older generation like an older model.
-BUILD_GENERATION = 2
+# 3: short stage cards (2-3 word names, 8-14 word descriptions) and the Google-Cloud-only rule for every stage.
+BUILD_GENERATION = 3
 TRANSIENT_KEYS = ("project_dir", "zip_path", "deck_path", "code", "requirements")  # re-read from the folder
 MAX_GROUNDING_DOCS = 8
 MAX_DOC_LOOKUPS = 6
@@ -495,6 +496,7 @@ class UseCaseSynthesizer:
                 seen.add(parent)
                 docs.append({"parent": parent, "title": doc_title(parent), "url": doc_url(parent),
                              "snippet": " ".join((r.get("content") or "").split())[:600]})
+        docs.sort(key=lambda d: not is_product_doc(d["url"]))  # stable: product docs first, blog posts after
         return docs[:MAX_GROUNDING_DOCS]
 
     def _citations(self, stages: List[dict], grounding: List[dict]) -> List[Tuple[str, str]]:
@@ -511,14 +513,15 @@ class UseCaseSynthesizer:
         return picked
 
     def _doc_for(self, stage: dict) -> str:
-        """First official doc for a stage's service and API ('' when the search fails or finds none; the
-        rubric's citation check then reports the gap)."""
+        """An official doc for a stage's service and API: the first product documentation page, else the first
+        result ('' when the search fails or finds none; the rubric's citation check then reports the gap)."""
         try:
             results = self.mcp.search_documents(f"{stage['service']} {stage['api']}")
         except (McpError, requests.RequestException) as e:
             logger.warning("doc lookup for %r failed: %s", stage["stage"], e)
             return ""
-        return next((r["parent"] for r in results if doc_url(r.get("parent", ""))), "")
+        parents = [r["parent"] for r in results if doc_url(r.get("parent", ""))]
+        return next((p for p in parents if is_product_doc(doc_url(p))), parents[0] if parents else "")
 
     @staticmethod
     def _attach(stages: List[dict], catalog: Dict[str, dict]) -> None:

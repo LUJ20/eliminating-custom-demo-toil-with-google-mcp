@@ -25,6 +25,29 @@ MAX_FIELD = 400
 MAX_FEATURES = 3
 MIN_STAGES, MAX_STAGES = 3, 6  # asked of the planner; one stage of slack either way is accepted without a re-prompt
 MAX_PIPELINE_CHARS = 40000
+# Stage cards stay short: the planner is asked for 2-3 word stage names, 2-5 word APIs and 8-14 word descriptions;
+# these are the limits past which the plan is sent back.
+MAX_STAGE_WORDS, MAX_STAGE_CHARS, MAX_API_WORDS, MAX_DESCRIPTION_WORDS = 4, 32, 8, 20
+# Every stage runs on a Google Cloud service unless the ask names something else. These patterns are the usual
+# ways a plan drifts off Google Cloud; they are checked against a stage's service and API, never against the ask's
+# own words (a term the ask names is allowed, and the stage is marked external).
+_WORD = r"(?<![a-z0-9]){}(?![a-z0-9])"
+_VENDORS = re.compile(_WORD.format(  # another vendor's cloud or SaaS (no everyday words: "zoom", "elastic")
+    r"(?:aws|amazon|azure|microsoft|twilio|vonage|snowflake|databricks|datadog|splunk|auth0|okta|stripe|salesforce"
+    r"|servicenow|zendesk|hubspot|slack|oracle|sap|ibm|cloudflare|akamai|confluent|mongodb|pinecone|weaviate"
+    r"|elasticsearch|heroku|vercel|netlify|whatsapp|tiktok|twitter|chatgpt)"), re.I)
+_MODEL_MAKERS = re.compile(_WORD.format(  # fine as a model served by a Google product; not as the service itself
+    r"(?:openai|anthropic|meta|mistral|cohere|ai21|deepseek)"), re.I)
+_SELF_MANAGED = re.compile(_WORD.format(  # bare protocols, open-source infrastructure, client platforms
+    r"(?:webrtc|mqtt|kafka|redis|postgres|postgresql|mysql|mariadb|sqlite|cassandra|hadoop|spark|flink|airflow"
+    r"|kubernetes|docker|nginx|rabbitmq|graphql|langchain|llamaindex|react|flutter|android|ios|unity|unreal|opencv"
+    r"|ffmpeg|tensorflow|pytorch)"), re.I)
+_GOOGLE_MANAGED = re.compile(  # a Google product that may carry an engine's name (Cloud SQL for PostgreSQL)
+    r"google|agent platform|agent search|agent runtime|agent studio|agent builder|vertex|gemini|firebase|cloud sql"
+    r"|alloydb|memorystore|managed service for|dataproc|dataflow|cloud composer|gke|kubernetes engine|cloud run"
+    r"|cloud build|cloud functions|artifact registry|apigee|bigquery|pub/sub|spanner|bigtable|firestore|cloud storage"
+    r"|looker|model garden|document ai|dialogflow|maps|workspace", re.I)
+NOT_A_PRODUCT = {"google cloud", "google cloud platform", "gcp", "google"}  # a service must be a specific product
 CRITERIA = {
     "requirement_coverage": "Requirement coverage",
     "grounding": "Grounded in official docs",
@@ -35,7 +58,8 @@ CRITERIA = {
 CRITERIA_HELP = {
     "requirement_coverage": "the design covers every requirement in the ask",
     "grounding": "the chosen services, APIs and showcased model features are consistent with the official docs and "
-                 "the verified facts",
+                 "the verified facts, and every stage runs on a Google Cloud service (another vendor's service or a "
+                 "bare protocol only when the ask names it)",
     "code_alignment": "pipeline.py implements the stages and configures their showcased features as designed",
     "deliverable_coverage": "the deliverables let a viewer see, hear or try every output the ask expects, in the "
                             "form this use case really produces it (media for media, avatar or voice asks; the "
@@ -142,20 +166,43 @@ language, so the variants in order read as one journey.
 Return JSON only:
 {{"summary": "<two sentences>", "story": {{"title": "...", "logline": "...", "hero": "...", "challenge": "...",
 "beats": [{{"id": "b1", "title": "<3 to 6 words>", "scene": "<what happens, one sentence>", "feature": "<the
-requirement from the ask this scene proves>"}}], "payoff": "..."}}, "stages": [{{"stage": "<short name>", "service": "<Google product>",
-"api": "<API, method or feature used>", "tier": "<tier or empty>", "features": ["<documented feature name>"],
-"description": "<one sentence>", "doc": <number of the supporting document above, or 0>}}],
+requirement from the ask this scene proves>"}}], "payoff": "..."}}, "stages": [{{"stage": "<2 or 3 words>",
+"service": "<the Google Cloud product>", "api": "<API, SDK or feature used, 2 to 5 words>", "tier": "<tier or empty>",
+"features": ["<documented feature name>"], "description": "<what this stage does: one plain sentence of 8 to 14
+words that starts with a verb>", "doc": <number of the supporting document above, or 0>}}],
 "deliverables": [{{"id": "<short_id>", "title": "<what the viewer gets>", "kind": "<kind>", "tier": "<tier>",
 "brief": "<what it must show or say, one or two sentences>", "variants": [{{"label": "<e.g. Japanese>",
 "language": "<BCP-47 code, or empty>"}}], "start_from": "<id of an image deliverable, or empty>",
 "beat": "<id of the story beat it plays>"}}]}}
-Rules: {MIN_STAGES} to {MAX_STAGES} stages in execution order; every stage names a real Google product;
-descriptions under 30 words."""
+Rules: {MIN_STAGES} to {MAX_STAGES} stages in execution order; every stage names a specific Google Cloud product;
+stage names 2 or 3 words; descriptions 8 to 14 words, no marketing adjectives."""
     text, _ = vertex.generate(settings, model, prompt, location=location, json_mode=True)
-    return validate_plan(text, catalog, len(grounding), max_assets), 1.0
+    return validate_plan(text, catalog, len(grounding), max_assets, ask=f"{customer}\n{ask}"), 1.0
 
 
-def validate_plan(text: str, catalog: Dict[str, dict], n_docs: int, max_assets: int) -> dict:
+def _named_in(term: str, ask: str) -> bool:
+    """True when the ask names the term (prefix match on a word: 'Postgres' is named by 'PostgreSQL')."""
+    return bool(re.search(rf"(?<![a-z0-9]){re.escape(term)}", ask, re.I))
+
+
+def off_google_cloud(service: str, api: str, ask: str = "") -> Tuple[List[str], List[str]]:
+    """Terms that take a stage off Google Cloud -> (named in the ask, not named). A Google-managed product may carry
+    an engine's or a model maker's name (Cloud SQL for PostgreSQL, Claude on Model Garden); a stage on a Google
+    product that calls another vendor's API (Cloud Run calling Twilio) is still that vendor's stage."""
+    if _GOOGLE_MANAGED.search(service):
+        found = _VENDORS.findall(api)
+    else:
+        text = f"{service} {api}"
+        found = _VENDORS.findall(text) + _MODEL_MAKERS.findall(text) + _SELF_MANAGED.findall(text)
+    terms = list(dict.fromkeys(t.lower() for t in found))
+    named = [t for t in terms if _named_in(t, ask)]
+    return named, [t for t in terms if t not in named]
+
+
+def validate_plan(text: str, catalog: Dict[str, dict], n_docs: int, max_assets: int, ask: str = "") -> dict:
+    """The planner's JSON, checked and normalised. `ask` is the customer and use-case text: a stage may name a
+    non-Google service, protocol or platform only when that text names it. Raises OutputError for anything the
+    planner should fix (the troubleshooter re-prompts with the message)."""
     try:
         data = vertex.parse_json(text)
     except ValueError as e:
@@ -171,6 +218,20 @@ def validate_plan(text: str, catalog: Dict[str, dict], n_docs: int, max_assets: 
         f = {k: current_names(_clean(s.get(k))) for k in ("stage", "service", "api", "description")}
         if not all(f.values()):
             raise OutputError(f"stage {i} is missing stage, service, api or description")
+        name = re.sub(r"^\d+[.)]\s*", "", f["stage"])
+        if len(name.split()) > MAX_STAGE_WORDS or len(name) > MAX_STAGE_CHARS:
+            raise OutputError(f"stage {i} name '{name}' is too long; use 2 or 3 words")
+        if len(f["api"].split()) > MAX_API_WORDS:
+            raise OutputError(f"stage {i} 'api' is too long; name the API, SDK or feature in 2 to 5 words")
+        if len(f["description"].split()) > MAX_DESCRIPTION_WORDS:
+            raise OutputError(f"stage {i} description is too long; one plain sentence of 8 to 14 words")
+        if f["service"].lower().strip(" .") in NOT_A_PRODUCT:
+            raise OutputError(f"stage {i} names '{f['service']}' as its service; name the specific Google Cloud product")
+        named, foreign = off_google_cloud(f["service"], f["api"], ask)
+        if foreign:
+            raise OutputError(f"stage {i} uses {', '.join(foreign)}: not a Google Cloud service and not named in the ask; "
+                              "redesign it on a Google Cloud service (a customer's app is modelled by the Google Cloud "
+                              "service it calls, e.g. Firebase AI Logic or a Cloud Run endpoint)")
         tier = _clean(s.get("tier"), 20).lower()
         tier = "" if tier in ("none", "null", "-", "n/a", "empty") else tier
         if tier and tier not in catalog:
@@ -183,13 +244,13 @@ def validate_plan(text: str, catalog: Dict[str, dict], n_docs: int, max_assets: 
             doc = 0
         known = {x["name"].lower(): x["name"] for x in (catalog.get(tier) or {}).get("features", [])} if tier else {}
         feats: List[str] = []
-        for name in s.get("features") if isinstance(s.get("features"), list) else []:
-            match = known.get(_clean(name, 80).lower())
+        for name_ in s.get("features") if isinstance(s.get("features"), list) else []:
+            match = known.get(_clean(name_, 80).lower())
             if match and match not in feats:  # names not in the documented list are dropped, never invented
                 feats.append(match)
-        name = re.sub(r"^\d+[.)]\s*", "", f["stage"])
         clean.append({**f, "stage": f"{i}. {name}", "tier": tier, "features": feats[:MAX_FEATURES],
-                      "doc": doc if 1 <= doc <= n_docs else 0})
+                      "doc": doc if 1 <= doc <= n_docs else 0,
+                      "external": bool(named) and not _GOOGLE_MANAGED.search(f["service"])})
     deliverables = manifest.validate_manifest(data.get("deliverables"), catalog, max_assets)
     return {"summary": current_names(_clean(data.get("summary"), 600)), "stages": clean, "deliverables": deliverables,
             "story": validate_story(data.get("story"), deliverables)}

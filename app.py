@@ -63,11 +63,17 @@ div.stButton > button, div.stDownloadButton > button {
     background-color: #1A73E8 !important; color: #FFFFFF !important;
     border-radius: 6px !important; font-weight: 500 !important;
 }
+.arch-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px;
+    margin: 0.4rem 0 1rem; }
 .arch-card {
     background-color: #FFFFFF; border: 1px solid #DADCE0; border-top: 3px solid #1A73E8; border-radius: 8px;
-    padding: 1rem; box-shadow: 0 1px 3px rgba(0,0,0,0.08); height: 100%;
+    padding: 0.8rem 0.9rem; box-shadow: 0 1px 3px rgba(0,0,0,0.08); overflow-wrap: break-word;
 }
 .arch-card.ai { border-top-color: #188038; background-color: #F6FBF7; }
+div.arch-grid .arch-card p { margin: 0 0 0.3rem; font-size: 0.85rem; line-height: 1.4; color: #3C4043; }
+div.arch-grid .arch-card p.stage { color: #1A73E8; font-size: 0.95rem; font-weight: 600; }
+div.arch-grid .arch-card p.service { color: #202124; font-weight: 600; }
+div.arch-grid .arch-card p.note { color: #5F6368; font-size: 0.78rem; }
 
 /* Highlighted Modern Tabs */
 .stTabs [data-baseweb="tab-list"] {
@@ -260,23 +266,25 @@ def render_architecture(res: dict) -> None:
     st.graphviz_chart(build_architecture_dot(res.get("stages", []), res.get("deliverables") or []),
                       width="stretch")
 
-    for col, s in zip(st.columns(len(res["stages"])), res["stages"]):
+    cards = []
+    for s in res["stages"]:
         e = {k: html.escape(str(s.get(k) or ""), quote=True)  # planner output is untrusted: escape before HTML
-             for k in ("stage", "service", "api", "model", "description", "doc_title")}
+             for k in ("stage", "service", "api", "model", "description")}
         feats = [f for f in s.get("features", []) if isinstance(f, dict)]
-        feat_html = (f'<p style="margin:0.3rem 0 0;font-size:0.8rem;"><b>Showcases:</b> '
-                     f'{", ".join(html_link(f.get("name"), f.get("doc_url")) for f in feats)}</p>' if feats else "")
-        link = (f'<p style="font-size:0.8rem;margin:0.4rem 0 0;">{html_link(s.get("doc_title") or "source", s.get("doc_url"))}</p>'
-                if safe_url(s.get("doc_url")) else "")
-        model = f"<code>{e['model']}</code>" if e["model"] else "none"
-        with col:
-            st.markdown(f"""<div class="arch-card{' ai' if e['model'] else ''}">
-<h5 style="color:#1A73E8;margin-top:0;">{e['stage']}</h5>
-<p style="margin:0 0 0.3rem;"><b>{e['service']}</b></p>
-<p style="margin:0 0 0.3rem;font-size:0.85rem;"><b>Model:</b> {model}</p>
-<p style="margin:0 0 0.3rem;font-size:0.85rem;"><b>API:</b> <code>{e['api']}</code></p>
-<p style="font-size:0.85rem;color:#3C4043;margin:0;">{e['description']}</p>{feat_html}{link}</div>""",
-                        unsafe_allow_html=True)
+        rows = [f'<p class="stage">{e["stage"]}</p>', f'<p class="service">{e["service"]}</p>']
+        if e["model"]:
+            rows.append(f'<p><b>Model:</b> {e["model"]}</p>')
+        rows.append(f'<p><b>API:</b> {e["api"]}</p>')
+        rows.append(f'<p>{e["description"]}</p>')
+        if feats:
+            rows.append('<p><b>Showcases:</b> ' + ", ".join(html_link(f.get("name"), f.get("doc_url")) for f in feats)
+                        + '</p>')
+        if s.get("external"):
+            rows.append('<p class="note">Named in the ask; not a Google Cloud service</p>')
+        if safe_url(s.get("doc_url")):
+            rows.append(f'<p>{html_link("Docs", s.get("doc_url"))}</p>')
+        cards.append(f'<div class="arch-card{" ai" if e["model"] else ""}">{"".join(rows)}</div>')
+    st.markdown(f'<div class="arch-grid">{"".join(cards)}</div>', unsafe_allow_html=True)
 
     whats_new = res.get("whats_new") or []
     shown = sum(1 for f in whats_new if f.get("showcased"))
