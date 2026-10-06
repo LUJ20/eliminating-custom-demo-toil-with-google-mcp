@@ -182,42 +182,29 @@ Not a substitute for an architecture review: the studio grounds and checks a dem
 The codebase uses a **deterministic Python orchestrator** pattern (`Orchestrator → Gemini Brain + MCP Knowledge + Direct Google API Tools`) rather than an open-ended autonomous tool-calling loop. The boxes are numbered in the order one build uses them; each arrow is what a step hands to the next:
 
 ```mermaid
-%%{init: {"themeVariables": {"fontSize": "18px"}, "flowchart": {"wrappingWidth": 300, "nodeSpacing": 30, "rankSpacing": 40}}}%%
+%%{init: {"themeVariables": {"fontSize": "18px"}, "flowchart": {"wrappingWidth": 280, "nodeSpacing": 40, "rankSpacing": 50}}}%%
 flowchart TB
-    UI["1. Streamlit UI · app.py<br/>takes the ask, shows the kit"]
-    O["2. Orchestrator · plain Python<br/>usecase_synthesizer.py,<br/>build_editor.py, deliverables.py,<br/>prebuild.py: calls 3 to 7 in order,<br/>retries, parallel lanes and cost caps"]
-    subgraph KB ["3. Knowledge  →  4. Gemini brain"]
+    subgraph IN ["1 → 2. Entry"]
         direction LR
-        subgraph K ["3. Developer Knowledge MCP"]
-            direction TB
-            MCP["mcp_knowledge_client.py:<br/>search_documents · get_documents<br/>docs for the ask, model pages,<br/>install docs"] ~~~ ANY["Any Google Cloud service can be<br/>in the design: BigQuery,<br/>Document AI, Maps, Firebase,<br/>Pub/Sub, ..."]
-        end
-        subgraph B ["4. Gemini brain"]
-            direction TB
-            R["4a. Model Resolver<br/>model_resolver.py<br/>newest verified model per tier"] --> G["4b. brain.py · vertex.py<br/>code_editor.py<br/>plan, story, media direction,<br/>code, judge, chat edits"]
-        end
-        MCP -->|"docs, models, features"| G
+        UI["1. Streamlit UI · app.py<br/>takes the ask, shows the kit"] -->|"customer + ask"| O["2. Orchestrator · plain Python<br/>usecase_synthesizer.py, build_editor.py,<br/>deliverables.py, prebuild.py: calls 3 to 7<br/>in order, retries, parallel lanes, cost caps"]
     end
-    subgraph TE ["5. Google APIs the studio calls  →  6. Evaluation and safety"]
+    subgraph KB ["3. Developer Knowledge MCP  →  4. Gemini brain"]
         direction LR
-        subgraph T ["5. Direct Google APIs"]
-            direction TB
-            MED["media.py: demo media, only when<br/>the plan asks for them<br/>Veo · Imagen · Gemini-TTS · Lyria"] ~~~ ST["artifact_store.py · project_sync.py<br/>Cloud Storage (every build)<br/>Drive + Slides (on publish)"]
-        end
-        subgraph E ["6. Evaluation and safety"]
-            direction TB
-            EV["acceptance.py · media_qa.py<br/>well_architected.py<br/>dependency_resolver.py<br/>pii_sanitizer.py"] ~~~ RG["regression.py<br/>reference builds after<br/>a model upgrade"]
-        end
-        MED -->|"every clip checked"| EV
+        MCP["3. mcp_knowledge_client.py<br/>search_documents · get_documents: docs for<br/>the ask, model pages, install docs. Any Google<br/>Cloud service can be in the design (BigQuery,<br/>Document AI, Maps, Firebase, Pub/Sub, ...)"] -->|"docs, models, features"| G
+        R["4a. Model Resolver · model_resolver.py<br/>newest verified model per tier"] --> G["4b. brain.py · vertex.py · code_editor.py<br/>plan, story, media direction,<br/>code, judge, chat edits, BOM narrative"]
     end
-    P["7. Package · code, media, deck,<br/>scorecard, review, PII audit<br/>Cloud Storage, Drive + Slides, UI"]
-    TS["Troubleshooter · troubleshooter.py<br/>around every model call in 4, 5, 6<br/>invalid output → re-prompt<br/>with the reason; failure →<br/>fallback model; incidents logged"]
-    UI -->|"customer + ask"| O
-    O -->|"3. ground the ask"| MCP
-    G -->|"4 to 5: media directions (background)"| MED
-    G -->|"4 to 6: design + pipeline.py"| EV
-    EV -->|"6 to 7: scorecard, PASSED or retry"| P
-    TE -.- TS
+    subgraph TE ["5. Direct Google APIs  →  6. Evaluation and safety"]
+        direction LR
+        MED["5. media.py: demo media, only when the<br/>plan asks for them<br/>Veo · Imagen · Gemini-TTS · Lyria"] -->|"every clip checked and measured"| EV
+        ST["5. artifact_store.py · project_sync.py<br/>Cloud Storage (every build)<br/>Drive + Slides + Docs (on publish)"] ~~~ EV["6. acceptance.py · media_qa.py · modality_eval.py<br/>well_architected.py · dependency_resolver.py<br/>pii_sanitizer.py · regression.py (reference<br/>builds after a model upgrade)"]
+    end
+    subgraph OUT ["7. Package"]
+        direction LR
+        P["7. code, media, deck + 4 BOM documents,<br/>scorecard, review, PII audit<br/>Cloud Storage, Drive + Slides + Docs, UI"] ~~~ TS["Troubleshooter · troubleshooter.py<br/>around every model call in 4, 5, 6: invalid<br/>output → re-prompt with the reason;<br/>failure → fallback model; incidents logged"]
+    end
+    IN -->|"3. ground the ask · 4. pick models"| KB
+    KB -->|"4 to 5: media directions (background) · 4 to 6: design + pipeline.py"| TE
+    TE -->|"6 to 7: scorecard, PASSED or retry"| OUT
 ```
 
 Two different lists, on purpose. **What a demo can use** is open: the planner picks services for the customer's ask from the official docs (a delivery demo gets Maps, Fleet Engine and Firebase; an analytics demo gets BigQuery), so coverage is everything Google documents. It is Google Cloud only by default: a stage on another vendor's service, a bare protocol or a client platform is accepted only when the ask names it (and the card says so); a customer's own app is modelled by the Google Cloud service it calls. **What the studio itself calls** is deliberately small, and it is a maximum, not a fixed set per build: Gemini on every build (plan, media direction, code, judge, acceptance tests, output checks); Veo, Imagen, Gemini-TTS and Lyria only when the use case's deliverables are video, image, speech or music (a data, RAG or agent demo gets its tables, JSON, agent traces and chat from Gemini as text, and no media model is called); Cloud Storage on every build (project backup); Drive + Slides only when you publish; Live and Embeddings only by the model resolver to verify a model is callable. The PII scrub, the zip, the deck and the story script are Python, no API. The studio designs, writes and evaluates the demo; it does not run the customer's services (generated code is never executed), so it needs no credentials for them.
