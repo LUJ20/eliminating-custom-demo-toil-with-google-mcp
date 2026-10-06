@@ -91,14 +91,14 @@ for that, once.
 | Google Cloud project | `--project YOUR_PROJECT_ID` | `GOOGLE_CLOUD_PROJECT` in `.env`, or your gcloud default project |
 | Who can open the app | `--allow user:a@example.com,group:team@example.com` | `IAP_ALLOW` in `.env` |
 | Bucket for packages and project backups | nothing: `YOUR_PROJECT_ID-gemini-mcp-studio` is created for you | `--bucket NAME` or `GCS_BUCKET` in `.env` |
-| Google Drive folder (decks as Google Slides, scripts as Google Docs) | paste the folder link in the app's sidebar | `--drive-folder <folder link or ID>` or `DRIVE_FOLDER` in `.env`. On Cloud Run the folder must be in a **shared drive** with the service account `<service>@<project>.iam.gserviceaccount.com` added as Content manager (a service account has no My Drive storage); without it, decks are published to the bucket as `.pptx` |
+| Google Drive folder (decks as Google Slides, scripts as Google Docs) | paste the folder link in the app's sidebar | `--drive-folder <folder link or ID>` or `DRIVE_FOLDER` in `.env`. On Cloud Run the folder must be in a **shared drive** with the service account `<service>@<project>.iam.gserviceaccount.com` added as Content manager (a service account has no My Drive storage); without it, decks are published to the bucket as `.pptx`. One-time setup, signed in as the account that uses the app: Drive → **Shared drives** → **New** (a shared drive, not a My Drive folder: its link ends in `/folders/0A…`, a My Drive folder's in `/folders/1…`) → **Manage members** → add the service account as **Content manager** → copy the link from the address bar |
 | Cloud Run region, service name, instances kept warm | defaults `us-central1`, `gemini-mcp-studio`, `1` | `--region`, `--service`, `--min-instances`, or `CLOUD_RUN_REGION`, `CLOUD_RUN_SERVICE`, `CLOUD_RUN_MIN_INSTANCES` in `.env` |
 | Vertex AI location | default `global` | `--location` or `GOOGLE_CLOUD_LOCATION` in `.env` |
 | Local port | default `8502` | `--port` |
 | Eval thresholds, media limits, model policy | defaults | copy [.env.example](.env.example) to `.env` and edit; every knob is listed there with its default |
 
 The sidebar also lets you switch the bucket, Drive folder and model mode for your own session without a
-redeploy; the project is the one you deployed to. `--min-instances 0` costs nothing when idle, but a cold instance takes a few minutes to resolve models.
+redeploy; the project is the one you deployed to. **Show output checks** (off by default) draws the checker's verdict under each demo output; the scorecard itself shows one status line and the rubric table, and the per-test inputs and outputs, the attempt history and the incident log stay in the build's `.studio_result.json`. `--min-instances 0` costs nothing when idle, but a cold instance takes a few minutes to resolve models.
 
 ## Costs and limits
 
@@ -317,7 +317,7 @@ Acceptance tests run the **design** (stages + chosen models), not the generated 
 | Table / JSON result | schema valid, matches the brief, written language, brand safe | plays the scene |
 | Agent trace | schema valid, matches the brief, plausible steps, safe actions, brand safe | plays the scene |
 
-A critical failure regenerates the output with the findings, up to 2 more rounds [`MEDIA_RETRIES`], best kept (a chat is played again with the findings appended to its system instruction). The live **Demo output quality** row = all outputs pass their critical checks; in the UI each output shows one collapsed "Checks: n/m passed" line with the reviewer's summary.
+A critical failure regenerates the output with the findings, up to 2 more rounds [`MEDIA_RETRIES`], best kept (a chat is played again with the findings appended to its system instruction). The live **Demo output quality** row = all outputs pass their critical checks; with the sidebar switch **Show output checks** on, each output also shows one collapsed "Checks: n/m passed" line with the reviewer's summary (off by default; a failed check still highlights that output's Regenerate button).
 
 #### 4.5 Chat — is the answer or change right? (`engine/build_editor.py`)
 

@@ -490,9 +490,11 @@ def _media_panel(project_dir: str, did: str, build_id: str, settings: Settings) 
 
 def render_qa(qa: dict) -> None:
     """The output checker's verdict as one quiet line (a collapsed expander); the reviewer's summary and each
-    check sit inside it. Model-written findings are shown as escaped markdown or plain text."""
+    check sit inside it. Drawn only when the sidebar switch "Show output checks" is on (off by default, so a demo
+    page shows the outputs alone; a failed check still turns the Regenerate button primary). Model-written
+    findings are shown as escaped markdown or plain text."""
     verdict = qa.get("verdict")
-    if not verdict:
+    if not verdict or not st.session_state.get("show_checks"):
         return
     checks = qa.get("checks") or []
     summary = md_escape(str(qa.get("summary", ""))[:400])
@@ -679,49 +681,10 @@ def render_package(res: dict, pub: dict, dirty: bool, settings: Settings) -> Non
             st.caption("Add a bucket or a Drive folder in the sidebar to publish the package.")
 
 
-def _acceptance_rows(summary: dict) -> list:
-    """One table row per acceptance test: result and the reason in one line."""
-    rows = []
-    for r in summary.get("results") or []:
-        checks = r.get("checks") or []
-        failed = [c for c in checks if not c.get("pass")]
-        why = ("; ".join(f"{c.get('name')}: {c.get('why')}" for c in failed) if failed
-               else f"all {len(checks)} check(s) passed")
-        rows.append({"Test": str(r.get("id", "")), "Stage": str(r.get("stage", "")), "Type": str(r.get("type", "")),
-                     "Pass": "yes" if r.get("pass") else "no", "Why": " ".join(str(why).split())[:220]})
-    return rows
-
-
-def render_acceptance(res: dict) -> None:
-    """End-to-end acceptance tests of this build's design: a one-line verdict per test, inputs and outputs
-    behind an expander (plain text: model output is never rendered as markdown)."""
-    summary = res.get("acceptance") or {}
-    results = summary.get("results") or []
-    if not results and not summary.get("note"):
-        return
-    row = summary.get("row") or {}
-    st.markdown(f"**Acceptance tests: {md_escape(str(row.get('value', '')))}** · end-to-end tests written from "
-                "the ask and run on this design's models")
-    if summary.get("note"):
-        st.caption(md_escape(str(summary["note"]))[:300])
-    if results:
-        st.dataframe(_acceptance_rows(summary), hide_index=True, width="stretch")
-        tests = {t.get("id"): t for t in summary.get("tests") or []}
-        with st.expander("Inputs and outputs of each test"):
-            for r in results:
-                t = tests.get(r.get("id")) or {}
-                st.markdown(f"**{md_escape(str(r.get('id', '')))}** · {'passed' if r.get('pass') else 'failed'} · "
-                            f"requirement: {md_escape(str(r.get('requirement', '')))[:200]}")
-                if t.get("input"):
-                    st.text(f"Input: {str(t['input'])[:500]}")
-                if r.get("output"):
-                    st.text(f"Output: {str(r['output'])[:500]}")
-                st.dataframe([{"Check": c.get("name"), "Pass": "yes" if c.get("pass") else "no",
-                               "Critical": "yes" if c.get("critical") else "no", "Why": c.get("why")}
-                              for c in r.get("checks") or []], hide_index=True, width="stretch")
-
-
 def render_rubric(res: dict) -> None:
+    """The scorecard: one status line (result, score, attempts, acceptance tests passed) and the rubric table.
+    The per-test inputs and outputs, the attempt history and the incident log are kept in `.studio_result.json`
+    but are not drawn on the page."""
     st.subheader("4. Scorecard")
     final, attempts = res["final_status"], res["attempt_stats"]
     best = max((a.get("score_pct") or 0 for a in attempts), default=None)
@@ -738,38 +701,6 @@ def render_rubric(res: dict) -> None:
     st.dataframe([{"Check": m["metric"], "Result": m["value"], "Threshold": m["threshold"],
                    "Pass": "yes" if m["pass"] else "no", "Why": " ".join(str(m.get("notes") or "").split())}
                   for m in rows], hide_index=True, width="stretch")
-    if quality:
-        st.caption("Demo output quality is live: it updates as clips finish and their checks run, next to the "
-                   "build score, not averaged into it.")
-    render_acceptance(res)
-
-    with st.expander(f"Attempts: {len(attempts)} · how each retry improved the build"):
-        st.dataframe([{"#": a["attempt"], "Score %": a["score_pct"], "Status": a["status"], "Seconds": a["seconds"],
-                       "Planner": a["planner"], "Codegen": a["coder"], "Judge": a["judge"]} for a in attempts],
-                     hide_index=True, width="stretch")
-        for a in attempts:
-            if a.get("patch_applied") not in ("", "-", None):
-                st.caption(f"After attempt {a['attempt']}: {md_escape(str(a['patch_applied']))[:400]}")
-        methods = {m["metric"]: m.get("method", "") for m in res["eval_metrics"]}
-        st.caption("Scoring method per row: " + "; ".join(f"{k}: {v}" for k, v in methods.items() if v))
-
-    incidents = res.get("incidents") or []
-    fixed = sum(1 for i in incidents if i.get("outcome") == "auto-fixed")
-    with st.expander(f"Troubleshooter log: {len(incidents)} incident(s), {fixed} auto-fixed",
-                     expanded=bool(incidents) and fixed < len(incidents)):
-        if not incidents:
-            st.caption("No failures in this run.")
-        for inc in incidents:
-            served = f", served by {inc['resolved_by']}" if inc.get("resolved_by") else ""
-            st.markdown(f"**{md_escape(inc['step'])}**: {md_escape(inc['outcome'] + served)}")
-            st.text("Errors: " + "; ".join(f"{e['kind']} on {e['model'] or 'n/a'}" for e in inc["errors"]))
-            st.text("Actions: " + "; ".join(inc["actions"]))
-            d = inc.get("diagnosis") or {}
-            if d:  # model-written text: shown as plain text, never as markdown or HTML
-                st.text(f"Root cause: {d.get('root_cause', '')}\nFix: " + " / ".join(d.get("fix_steps", []))
-                        + f"\n({d.get('source', '')})")
-            for doc in inc.get("docs", []):
-                st.markdown(f"- {md_link(doc['title'], doc['url'])}")
 
 
 GDOC_PREFIX = "https://docs.google.com/document/d/"
@@ -1135,6 +1066,10 @@ with st.sidebar:
                     help="Showcase: newest verified model per capability, previews included (best for demos). "
                          "Production: newest verified GA model per capability. Both are canary-gated with "
                          "automatic rollback. Default comes from ALLOW_PREVIEW_MODELS.")
+    st.toggle("Show output checks", value=False, key="show_checks",
+              help="Shows the checker's verdict under each demo output (checks passed, by which model, what failed). "
+                   "Off keeps the demo page clean; an output that failed a check still gets a highlighted "
+                   "Regenerate button.")
 
 
 st.markdown("""
