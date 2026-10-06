@@ -407,7 +407,7 @@ class UseCaseSynthesizer:
         summary = self.doctor.guard("Acceptance tests", lambda: acceptance.run_for_result(
             self.s, partial, synth=self, docs=grounding), None, retries=0)
         return summary or acceptance.empty_summary(
-            "acceptance tests could not run (see the Troubleshooter log)",
+            "acceptance tests could not run (the error is recorded as an incident in the build result)",
             float(getattr(self.s, "acceptance_min_pass", acceptance.DEFAULT_MIN_PASS)), ask)
 
     def _prepare_models(self, say: Callable[[str], None]) -> None:
