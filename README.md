@@ -25,16 +25,11 @@ scanned forms"*. The studio returns:
   one file) and films what the brief names (the product in an ad, a presenter only when the ask wants one)
 - **Story**: a hero, a challenge and a payoff, plus a presenter script
 - **Bill of materials, complete for every custom demo**: a 4-slide deck on the Google Cloud reference
-  architecture template, filled in place so the template's own typography, colours, cover art and table styling
-  stay (cover, architecture drawn in the template's icon language: the user, the Google Cloud canvas, one white
-  service card per stage with the product icon and the model it runs on, the demo outputs; design considerations
-  by Well-Architected pillar; when to use / anti-patterns) with the talk track in the speaker notes, plus the four
-  Global Solutions documents: technical guidance, demo delivery guide and clickpath, proof-of-concept best
-  practices and runbook, and the AI agents and skills guide with a ready `SKILL.md` (also inside the code
-  package) in the agent-skills format of the central skill catalogue (`skill_creator` conventions: a
-  triggering-contract frontmatter, an imperative runbook, the acceptance table as its eval expectations).
-  PowerPoint and HTML locally; Google Slides and Google Docs when a Drive folder is set. The app shows the deck
-  embedded with the four documents linked beside it
+  architecture template, filled in place (the template's own typography, colours and cover art; the architecture
+  in its icon language, one service card per stage with the product icon and the model it runs on) with the
+  talk track in the speaker notes, plus the four Global Solutions documents: technical guidance, demo delivery
+  guide, proof-of-concept runbook, and the AI agents and skills guide with a ready `SKILL.md`. PowerPoint and
+  HTML locally; Google Slides and Docs when a Drive folder is set
 - **Scorecard**: acceptance tests, judge scores, a privacy audit of the package, the reviewer's verdict on every
   output and the **measured, market-standard metrics per output modality** (CLIP-style alignment, VBench-style
   consistency, EBU R128 loudness, ASR word error rate, Agent Platform evaluation-service metrics)
